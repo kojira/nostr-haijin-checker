@@ -191,6 +191,7 @@ function fmtDate(sec: number | null): string {
 function renderResult(r: ScoreResult): void {
   resultEl.innerHTML = "";
 
+  const obs = r.observation;
   const head = document.createElement("div");
   head.className = "card score-head";
   head.innerHTML = `
@@ -205,17 +206,59 @@ function renderResult(r: ScoreResult): void {
     <p class="observed">
       観測 ${r.sampleSize} 件 / ${fmtDate(r.windowStart)} 〜 ${fmtDate(r.windowEnd)}
       (${escapeHtml(r.timezone)})<br />
+      観測ウィンドウ ${obs.observedWindowDays} 日 / 実稼働 ${obs.observedActiveDays} 日 /
+      初観測から ${obs.firstSeenAgeDays} 日前 ・ 観測信頼度 ${Math.round(
+        obs.confidence * 100,
+      )}%<br />
       <span class="npub-line">${escapeHtml(r.npub)}</span>
     </p>
   `;
   resultEl.appendChild(head);
 
+  // ── 3 軸サブスコア（短期 / 長期 / 利用パターン）を分離して提示 ──
+  const axesCard = document.createElement("div");
+  axesCard.className = "card axes";
+  const ah = document.createElement("h2");
+  ah.textContent = "3 軸スコア";
+  axesCard.appendChild(ah);
+  axesCard.appendChild(
+    axisRow("短期アクティブ度", "直近の観測ウィンドウ内での活発さ", r.subScores.shortTermActivity),
+  );
+  axesCard.appendChild(
+    axisRow(
+      "長期継続・古参度",
+      obs.longTermAssessable
+        ? "観測ウィンドウが十分にあり、長期の継続として評価できます。"
+        : "観測ウィンドウが短いため評価を保留（low-confidence）。長期継続は主張しません。",
+      r.subScores.longTermRetention,
+      !obs.longTermAssessable,
+    ),
+  );
+  axesCard.appendChild(
+    axisRow("利用パターン", "深夜・連投・交流の複合（生活リズム）", r.subScores.usagePattern),
+  );
+  resultEl.appendChild(axesCard);
+
+  // ── シグナル内訳（軸ごとにグルーピング） ──
+  const groups: { title: string; category: SignalScore["category"] }[] = [
+    { title: "短期アクティブ度", category: "shortTerm" },
+    { title: "利用パターン", category: "pattern" },
+    { title: "長期継続・古参度", category: "longTerm" },
+  ];
   const signalsCard = document.createElement("div");
   signalsCard.className = "card signals";
   const h = document.createElement("h2");
   h.textContent = "内訳（根拠）";
   signalsCard.appendChild(h);
-  for (const s of r.signals) signalsCard.appendChild(signalRow(s));
+  for (const g of groups) {
+    const inGroup = r.signals.filter((s) => s.category === g.category);
+    if (inGroup.length === 0) continue;
+    const gh = document.createElement("h3");
+    gh.className = "signal-group";
+    gh.textContent = g.title;
+    signalsCard.appendChild(gh);
+    for (const s of inGroup) signalsCard.appendChild(signalRow(s));
+  }
   resultEl.appendChild(signalsCard);
 
   if (r.notes.length) {
@@ -236,6 +279,27 @@ function renderResult(r: ScoreResult): void {
 
   resultEl.hidden = false;
   resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function axisRow(
+  label: string,
+  desc: string,
+  score: number,
+  lowConfidence = false,
+): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "axis" + (lowConfidence ? " axis-low" : "");
+  const pct = Math.round(score);
+  row.innerHTML = `
+    <div class="axis-top">
+      <span class="axis-label">${escapeHtml(label)}</span>
+      ${lowConfidence ? '<span class="axis-flag">⚠ 観測不足</span>' : ""}
+      <span class="axis-score">${pct}</span>
+    </div>
+    <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+    <p class="axis-desc">${escapeHtml(desc)}</p>
+  `;
+  return row;
 }
 
 function signalRow(s: SignalScore): HTMLElement {

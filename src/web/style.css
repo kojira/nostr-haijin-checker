@@ -218,10 +218,66 @@ textarea {
 }
 
 .signals h2,
+.axes h2,
 .notes-card h2,
 .notice h2 {
   margin: 0 0 14px;
   font-size: 1.05rem;
+}
+
+/* ---- 3 軸サブスコア ---- */
+.axis {
+  margin-bottom: 16px;
+}
+
+.axis-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.axis-label {
+  font-weight: 700;
+}
+
+.axis-flag {
+  color: #ffcf6c;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.axis-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: var(--accent-2);
+}
+
+.axis-desc {
+  margin: 2px 0 0;
+  color: var(--fg-dim);
+  font-size: 0.82rem;
+}
+
+.axis-low .bar-fill {
+  background: linear-gradient(90deg, #6a5230, #8a6a2a);
+}
+
+.axis-low .axis-score {
+  color: #ffcf6c;
+}
+
+.signal-group {
+  margin: 18px 0 10px;
+  font-size: 0.9rem;
+  color: var(--accent);
+  border-bottom: 1px solid #2a2f3a;
+  padding-bottom: 4px;
+}
+
+.signal-group:first-of-type {
+  margin-top: 4px;
 }
 
 .signal {

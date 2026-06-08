@@ -23,10 +23,11 @@ function ev(createdAt: number, kind = 1, tags: string[][] = []): NostrEvent {
   };
 }
 
+const BASE = 1_700_000_000; // 固定基準（テストの決定性のため）
+
 /** JST の指定日・指定時刻(秒)に対応する UNIX 秒。 */
 function jst(dayIndex: number, hour: number, minute = 0): number {
-  const base = 1_700_000_000; // 固定基準（テストの決定性のため）
-  return base + dayIndex * 86400 + (hour - 9) * 3600 + minute * 60;
+  return BASE + dayIndex * 86400 + (hour - 9) * 3600 + minute * 60;
 }
 
 test("廃人プロファイル: 毎日・深夜・連投・交流が多いと高スコア", () => {
@@ -73,4 +74,68 @@ test("空データ: スコア0・ランクは休眠・注意書きあり", () =>
   assert.equal(r.totalScore, 0);
   assert.equal(r.sampleSize, 0);
   assert.ok(r.notes.length > 0);
+  assert.equal(r.observation.longTermAssessable, false);
+  assert.equal(r.subScores.longTermRetention, 0);
+});
+
+test("短観測の高密度ユーザー: 短期は高いが長期継続は主張しない", () => {
+  // 7日間だけ・毎日40件の集中投稿（短い観測ウィンドウ）。
+  const events: NostrEvent[] = [];
+  for (let d = 0; d < 7; d++) {
+    for (let n = 0; n < 40; n++) {
+      events.push(ev(jst(d, 10 + (n % 12), n % 60)));
+    }
+  }
+  // now は最終投稿の少し後（観測ウィンドウは依然 7 日のまま）。
+  const now = jst(7, 12);
+  const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now);
+
+  // 短期は十分高い。
+  assert.ok(
+    r.subScores.shortTermActivity >= 60,
+    `短期が低すぎ: ${r.subScores.shortTermActivity}`,
+  );
+  // 長期継続は「観測不足」で評価不能、スコアも低い（古参を僭称しない）。
+  assert.equal(r.observation.longTermAssessable, false);
+  assert.ok(
+    r.subScores.longTermRetention < 25,
+    `長期が高すぎ（短観測なのに継続を主張）: ${r.subScores.longTermRetention}`,
+  );
+  // 観測ウィンドウ不足の注意書きが出る。
+  assert.ok(r.notes.some((n) => n.includes("low-confidence")));
+});
+
+test("長期にわたり活動: 長期継続が高く・評価可能になる", () => {
+  // 約400日にわたり3日おきに投稿（観測ウィンドウが長い）。
+  const events: NostrEvent[] = [];
+  for (let d = 0; d < 400; d += 3) {
+    events.push(ev(jst(d, 12)));
+  }
+  const now = jst(400, 12);
+  const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now);
+
+  assert.equal(r.observation.longTermAssessable, true);
+  assert.ok(
+    r.subScores.longTermRetention >= 60,
+    `長期が低すぎ: ${r.subScores.longTermRetention}`,
+  );
+  assert.ok(r.observation.observedWindowDays >= 45);
+});
+
+test("短観測の高密度 < 長期活動 で長期継続スコアが逆転する", () => {
+  const shortHeavy: NostrEvent[] = [];
+  for (let d = 0; d < 7; d++)
+    for (let n = 0; n < 40; n++) shortHeavy.push(ev(jst(d, 10 + (n % 12), n)));
+  const longSpan: NostrEvent[] = [];
+  for (let d = 0; d < 400; d += 3) longSpan.push(ev(jst(d, 12)));
+
+  const sr = scoreEvents(NPUB, HEX, shortHeavy, DEFAULT_CONFIG, jst(7, 12));
+  const lr = scoreEvents(NPUB, HEX, longSpan, DEFAULT_CONFIG, jst(400, 12));
+
+  // 短観測の高密度ユーザーは「短期」では勝つが「長期継続」では負ける。
+  assert.ok(sr.subScores.shortTermActivity > lr.subScores.shortTermActivity);
+  assert.ok(
+    lr.subScores.longTermRetention > sr.subScores.longTermRetention,
+    `長期逆転せず: short=${sr.subScores.longTermRetention} long=${lr.subScores.longTermRetention}`,
+  );
 });
