@@ -4,7 +4,7 @@
  * ブラウザにはネイティブの WebSocket があるため、Node 専用の ws は import せず、
  * nostr-fetch にもグローバルの WebSocket をそのまま使わせる（注入しない）。
  * 取得ロジック本体は環境非依存の query.ts と共通（nostr-fetch ベースの
- * バックワード・ページング）。
+ * 適応的タイムウィンドウ取得）。
  *
  * 注意（ブラウザ直アクセスの制約）:
  *  - リレーが wss://（TLS）でない場合、HTTPS ページからは Mixed Content で

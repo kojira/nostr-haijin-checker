@@ -1,0 +1,228 @@
+/**
+ * 適応的タイムウィンドウ取得（queryUserEvents）を、ネットワーク不要の
+ * 疑似フェッチャ（テストシーム fetcher）で決定的に検証する。
+ *   実行: npm test
+ *
+ * 検証対象:
+ *  1) 疎な履歴: 1 ウィンドウで少数 → 分割しない・全件返る・複数リレーで重複排除・complete
+ *  2) 密ウィンドウの分割: 粗いウィンドウは閾値以上を返すが取りこぼし、細い子ウィンドウで
+ *     その取りこぼし分が回収できること（件数ベースのページングなら欠落していたデータ）。
+ *     かつ minWindowSeconds 未満には分割しないこと。
+ *  3) グローバル重複排除: 同一 id が複数リレー/ウィンドウから来ても 1 件。
+ *  4) 部分失敗: 片方のリレーが例外 → そのリレーは failed/timeout、もう片方の結果は返る。
+ *  5) キャップ: maxEvents で早期停止 / maxWindows を尊重。
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  queryUserEvents,
+  DEFAULT_SINCE,
+  type MinimalFetcher,
+} from "../src/nostr/query.js";
+import type { NostrEvent } from "../src/types.js";
+
+const HEX = "00".repeat(32);
+
+function ev(id: string, createdAt: number, kind = 1): NostrEvent {
+  return { id, pubkey: HEX, created_at: createdAt, kind, tags: [], content: "x" };
+}
+
+/** [since, until) に入るイベントだけを返す素直な疑似フェッチャ。 */
+function fixtureFetcher(events: NostrEvent[]): MinimalFetcher & { calls: { since?: number; until?: number }[] } {
+  const calls: { since?: number; until?: number }[] = [];
+  return {
+    calls,
+    async fetchAllEvents(_relays, _filter, tr) {
+      calls.push({ since: tr.since, until: tr.until });
+      const s = tr.since ?? -Infinity;
+      const u = tr.until ?? Infinity;
+      return events.filter((e) => e.created_at >= s && e.created_at < u);
+    },
+    shutdown() {},
+  };
+}
+
+test("疎な履歴: 分割せず全件返る・complete", async () => {
+  const until = DEFAULT_SINCE + 2592000; // 30 日 = 初期ウィンドウ 1 個ぶん
+  const events = [
+    ev("a", DEFAULT_SINCE + 100),
+    ev("b", DEFAULT_SINCE + 86400),
+    ev("c", DEFAULT_SINCE + 200000),
+  ];
+  const f = fixtureFetcher(events);
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    fetcher: f,
+  });
+  assert.equal(out.length, 3);
+  // 30 日範囲をちょうど 1 ウィンドウで覆う＝分割なし。
+  assert.equal(f.calls.length, 1);
+  assert.equal(meta.historyComplete, true);
+  assert.equal(meta.stopReason, "ok");
+  assert.equal(meta.reachedOldestAvailable, true);
+  assert.equal(meta.pagesFetched, 1);
+});
+
+test("複数リレーで重複排除: 同一 id は 1 件", async () => {
+  const until = DEFAULT_SINCE + 2592000;
+  const shared = [ev("dup", DEFAULT_SINCE + 1000), ev("only1", DEFAULT_SINCE + 2000)];
+  const f1 = fixtureFetcher(shared);
+  const f2 = fixtureFetcher([ev("dup", DEFAULT_SINCE + 1000), ev("only2", DEFAULT_SINCE + 3000)]);
+  // 2 リレー分のフェッチャを 1 つに束ねる（relay URL で振り分け）。
+  const combined: MinimalFetcher = {
+    async fetchAllEvents(relays, filter, tr, o) {
+      return relays[0] === "wss://r1"
+        ? f1.fetchAllEvents(relays, filter, tr, o)
+        : f2.fetchAllEvents(relays, filter, tr, o);
+    },
+    shutdown() {},
+  };
+  const { events: out } = await queryUserEvents(HEX, {
+    relays: ["wss://r1", "wss://r2"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    fetcher: combined,
+  });
+  const ids = out.map((e) => e.id).sort();
+  assert.deepEqual(ids, ["dup", "only1", "only2"]);
+});
+
+test("密ウィンドウの分割: 粗いウィンドウの取りこぼしを子ウィンドウで回収する", async () => {
+  // 単一の 30 日ウィンドウを使う。リレーは「1 リクエストで先頭 N 件しか返さない」キャップを
+  // 模す: 粗いウィンドウ（広い）では一部しか返さず、狭い子ウィンドウなら全件返す。
+  const since = DEFAULT_SINCE;
+  const until = since + 2592000;
+  // 全データ: 50 件を範囲に分散配置。
+  const all: NostrEvent[] = [];
+  for (let i = 0; i < 50; i++) {
+    all.push(ev(`e${i}`, since + i * 50000)); // 50000s 間隔 → 30 日内に収まる
+  }
+  // denseThreshold=10, minWindow=3600。各ウィンドウ呼び出しで:
+  //  - 範囲内イベントを抽出し、先頭 10 件（古い順）だけ返す（リレーキャップ模擬）。
+  //    → 範囲が広いと末尾（新しめ）が落ちるが、中点分割で別ウィンドウになり回収される。
+  const calls: { since: number; until: number }[] = [];
+  const capped: MinimalFetcher = {
+    async fetchAllEvents(_relays, _filter, tr) {
+      const s = tr.since!;
+      const u = tr.until!;
+      calls.push({ since: s, until: u });
+      const inWin = all
+        .filter((e) => e.created_at >= s && e.created_at < u)
+        .sort((a, b) => a.created_at - b.created_at);
+      return inWin.slice(0, 10); // 先頭 10 件だけ返す（キャップ）。
+    },
+    shutdown() {},
+  };
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: since,
+    denseThreshold: 10,
+    minWindowSeconds: 3600,
+    fetcher: capped,
+  });
+  // 分割によって最終的に全 50 件が回収できる（件数ページングなら欠落していた分）。
+  assert.equal(out.length, 50, `回収件数: ${out.length}`);
+  // 1 ウィンドウより多く呼ばれている＝実際に分割が起きた。
+  assert.ok(calls.length > 1, `分割が起きていない: calls=${calls.length}`);
+  // どのウィンドウ幅も minWindowSeconds を下回って分割していない
+  //（=分割は最小幅で止まる）。閾値以上を返したウィンドウだけが分割対象。
+  assert.equal(meta.historyComplete, true);
+});
+
+test("分割は minWindowSeconds 未満では起きない", async () => {
+  // 全イベントを 1 つの極小範囲（< minWindow）に詰め、常に閾値以上返るようにする。
+  const since = DEFAULT_SINCE;
+  const until = since + 1800; // 30 分 < minWindow(3600)
+  const all: NostrEvent[] = [];
+  for (let i = 0; i < 20; i++) all.push(ev(`x${i}`, since + i));
+  const calls: { since: number; until: number }[] = [];
+  const f: MinimalFetcher = {
+    async fetchAllEvents(_relays, _filter, tr) {
+      calls.push({ since: tr.since!, until: tr.until! });
+      return all.filter((e) => e.created_at >= tr.since! && e.created_at < tr.until!);
+    },
+    shutdown() {},
+  };
+  await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: since,
+    denseThreshold: 5, // 20 件 >= 5 なので「密」だが、幅が minWindow 未満なので分割しない
+    minWindowSeconds: 3600,
+    fetcher: f,
+  });
+  // 初期ウィンドウは 1 個（範囲が initialWindow より狭い）。分割されないので 1 回だけ。
+  assert.equal(calls.length, 1, `minWindow 未満で分割した: ${calls.length}`);
+});
+
+test("部分失敗: 片方が例外でも他リレーの結果は返る", async () => {
+  const until = DEFAULT_SINCE + 2592000;
+  const good = fixtureFetcher([ev("g1", DEFAULT_SINCE + 1000), ev("g2", DEFAULT_SINCE + 2000)]);
+  const combined: MinimalFetcher = {
+    async fetchAllEvents(relays, filter, tr, o) {
+      if (relays[0] === "wss://bad") throw new Error("boom");
+      return good.fetchAllEvents(relays, filter, tr, o);
+    },
+    shutdown() {},
+  };
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://bad", "wss://good"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    fetcher: combined,
+  });
+  // 健全なリレーのイベントは返る。
+  assert.equal(out.length, 2);
+  assert.equal(meta.relaysFailed, 1);
+  assert.equal(meta.relaysSucceeded, 1);
+  const bad = meta.relayStats.find((r) => r.url === "wss://bad")!;
+  assert.equal(bad.status, "failed");
+  assert.ok(bad.error?.includes("boom"));
+  // 仕様: 健全なリレーが範囲を覆い切れていれば（リレーは冗長なので）ok 扱い。
+  // 失敗した事実は relaysFailed / relayStats に正直に残る。
+  assert.equal(meta.stopReason, "ok");
+  assert.equal(meta.historyComplete, true);
+});
+
+test("キャップ: maxEvents で早期停止", async () => {
+  const since = DEFAULT_SINCE;
+  const until = since + 2592000 * 3; // 3 ウィンドウぶん
+  const all: NostrEvent[] = [];
+  for (let i = 0; i < 100; i++) all.push(ev(`m${i}`, since + i * 60000));
+  const f = fixtureFetcher(all);
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: since,
+    maxEvents: 10,
+    fetcher: f,
+  });
+  // 1 ウィンドウ目で 10 件以上集まり、上限到達で打ち切る。
+  assert.ok(out.length >= 10, `件数: ${out.length}`);
+  assert.equal(meta.hitEventCap, true);
+  assert.equal(meta.stopReason, "maxEvents");
+  assert.equal(meta.historyComplete, false);
+});
+
+test("キャップ: maxWindows を尊重する", async () => {
+  const since = DEFAULT_SINCE;
+  const until = since + 2592000 * 10; // 10 個の初期ウィンドウ
+  // 各ウィンドウに 1 件ずつ（分割は起きない）。
+  const all: NostrEvent[] = [];
+  for (let i = 0; i < 10; i++) all.push(ev(`w${i}`, since + i * 2592000 + 100));
+  const f = fixtureFetcher(all);
+  const { meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: since,
+    maxWindows: 3, // 3 ウィンドウで打ち切り
+    fetcher: f,
+  });
+  assert.equal(meta.pagesFetched, 3);
+  assert.equal(meta.hitPageCap, true);
+  assert.equal(meta.stopReason, "maxWindows");
+  assert.equal(meta.historyComplete, false);
+});

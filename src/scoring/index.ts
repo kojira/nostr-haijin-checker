@@ -67,7 +67,7 @@ export function scoreEvents(
 
   if (rawEvents.length === 0) {
     notes.push(
-      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-pages / --timeout を増やしてみてください。",
+      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-windows / --timeout を増やす・--since を緩めてみてください。",
     );
     for (const n of historyNotes(fetchMeta)) notes.push(n);
     return emptyResult(npub, pubkeyHex, config, notes, fetchMeta);
@@ -166,8 +166,9 @@ function shortRelay(url: string): string {
 
 /**
  * 取得メタ情報から「どこまで遡れたか・履歴が不完全かもしれない」を表す注意書きを作る。
- * リレーは完全性を保証しないため、自然終了（exhausted）でも「真の初投稿」とは
- * 断定しない。掘り切れていない（上限・タイムアウト・無進捗）ときは正直にそう言う。
+ * 取得は適応的タイムウィンドウ（since/until）で行うため、要求範囲を覆い切れた（ok）でも
+ * リレーが古いイベントを破棄していれば「真の初投稿」とは断定しない。掘り切れていない
+ * （各種上限・タイムアウト）ときは正直にそう言う。
  */
 export function historyNotes(meta: HistoryMeta | null): string[] {
   if (!meta) return [];
@@ -187,33 +188,26 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
 
   if (meta.reachedOldestAvailable) {
     out.push(
-      `過去方向へ ${meta.pagesFetched} ページ遡り、リレーはこれ以上古いイベントを返しませんでした（観測できた最古 ${oldest}）。これは「これらのリレーが保持する範囲の限界」であり、リレーが古いイベントを破棄している場合、本当の最初の投稿とは限りません。`,
+      `要求した時間範囲（下限まで）を ${meta.pagesFetched} ウィンドウで覆い切りました（観測できた最古 ${oldest}）。これは「これらのリレーが保持・返却した範囲の限界」であり、リレーが古いイベントを破棄している場合、本当の最初の投稿とは限りません。`,
     );
   }
 
   const truncatedReasons: string[] = [];
-  if (meta.hitPageCap) truncatedReasons.push("ページ数上限");
+  if (meta.hitPageCap) truncatedReasons.push("ウィンドウ数上限");
   if (meta.hitEventCap) truncatedReasons.push("取得件数上限");
   if (meta.timedOut) truncatedReasons.push("タイムアウト");
-  if (meta.noProgress) truncatedReasons.push("最古が過去へ進まず打ち切り");
   if (meta.stopReason === "error") truncatedReasons.push("取得エラー");
 
   if (truncatedReasons.length > 0) {
     out.push(
       `履歴を掘り切れていません（理由: ${truncatedReasons.join(
         " / ",
-      )}）。観測できた最古 ${oldest} より前にも投稿がある可能性が高く、長期継続・古参度は過小評価され得ます。--max-pages / --max-events / --timeout を増やすと、より過去まで遡れることがあります。`,
-    );
-  }
-
-  if (meta.stopReason === "sinceBound") {
-    out.push(
-      `指定した下限時刻まで遡って打ち切りました（観測できた最古 ${oldest}）。それより前は取得していません。`,
+      )}）。観測できた最古 ${oldest} より前にも投稿がある可能性が高く、長期継続・古参度は過小評価され得ます。--max-windows / --max-events / --timeout を増やすか --since を緩めると、より過去まで遡れることがあります。`,
     );
   }
 
   out.push(
-    `取得はリレーの保持期間・件数・接続ポリシーに依存します（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー / ${meta.pagesFetched} ページ / ${Math.round(
+    `取得はリレーの保持期間・件数・接続ポリシーに依存します（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー / ${meta.pagesFetched} ウィンドウ / ${Math.round(
       meta.elapsedMs,
     )}ms）。観測できたのは活動の一部かもしれません。`,
   );

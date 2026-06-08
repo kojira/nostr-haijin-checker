@@ -30,14 +30,24 @@ program
     "カンマ区切りのリレー URL（未指定ならデフォルト一式）",
   )
   .option(
-    "--page-size <n>",
-    "1 ページ（バックワード取得の1回）で取りに行く最大イベント数",
-    "500",
+    "--initial-window <sec>",
+    "最初に範囲を区切る粗いウィンドウ幅（秒）",
+    "2592000",
   )
   .option(
-    "--max-pages <n>",
-    "過去へ遡るページの最大回数（深く掘るほど初投稿に近づく）",
-    "40",
+    "--dense-threshold <n>",
+    "この件数以上を返したウィンドウは中点で分割して掘り直す（密判定）",
+    "1000",
+  )
+  .option(
+    "--min-window <sec>",
+    "これ以下の幅のウィンドウはそれ以上分割しない（秒）",
+    "3600",
+  )
+  .option(
+    "--max-windows <n>",
+    "1 リレーあたりのウィンドウ処理数の安全上限",
+    "5000",
   )
   .option(
     "--max-events <n>",
@@ -46,7 +56,7 @@ program
   )
   .option(
     "--since <unixsec>",
-    "この時刻(UNIX秒)より古いイベントは取りに行かない（下限）",
+    "この時刻(UNIX秒)より古いイベントは取りに行かない（下限。既定 2021-01-01）",
   )
   .option("-t, --tz <hours>", "時間分布の判定に使う UTC オフセット（時間）", "9")
   .option("--timeout <ms>", "取得全体のタイムアウト（ミリ秒）", "12000")
@@ -56,14 +66,15 @@ program
     `
 取得方針:
   nostr-fetch を基盤に、authors のみ（全 kind）でリレーへ問い合わせ、
-  until を最古イベントの手前へずらしながら**過去へ向かってページング**します。
-  リレーがこれ以上古いイベントを返さなくなる（=その人の初投稿に近づく）まで、
-  または --max-pages / --max-events / --timeout の上限まで遡ります。
-  リレーは保持期間・件数を保証しないため、掘り切れたか否かは結果に明示されます。
+  [since, until] を**適応的なタイムウィンドウ（since/until）**に区切って取得します。
+  密なウィンドウ（>= --dense-threshold 件）は中点で再帰分割して掘り直すため、
+  1 日に多数投稿しても件数境界で取りこぼしにくくなります。
+  --since（既定 2021-01-01）まで全ウィンドウを覆うか、--max-windows / --max-events /
+  --timeout の上限まで遡ります。掘り切れたか否かは結果に明示されます。
 
 例:
   $ nostr-haijin-checker npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m
-  $ nostr-haijin-checker <npub> --max-pages 80 --page-size 1000 --tz 9 --json
+  $ nostr-haijin-checker <npub> --dense-threshold 800 --max-windows 8000 --tz 9 --json
   $ npm run dev -- <npub>            # ビルド不要の開発実行(tsx)
 `,
   );
@@ -73,8 +84,10 @@ program.parse();
 const npubArg = program.args[0];
 const opts = program.opts<{
   relays?: string;
-  pageSize: string;
-  maxPages: string;
+  initialWindow: string;
+  denseThreshold: string;
+  minWindow: string;
+  maxWindows: string;
   maxEvents: string;
   since?: string;
   tz: string;
@@ -96,7 +109,7 @@ function renderCliProgress(p: FetchProgress): void {
   const failed = p.relaysFailed > 0 ? ` 失敗 ${p.relaysFailed}` : "";
   const line =
     `\r取得中... リレー ${p.relaysSucceeded}/${p.relaysTotal} 応答${failed}` +
-    ` ・ ${p.collectedUnique} 件 ・ ${p.pagesFetched} ページ` +
+    ` ・ ${p.collectedUnique} 件 ・ ${p.pagesFetched} ウィンドウ` +
     ` ・ 最古 ${fmtShort(p.oldestReached)} ・ ${(p.elapsedMs / 1000).toFixed(
       1,
     )}s   `;
@@ -132,14 +145,16 @@ async function main(): Promise<void> {
 
   if (!opts.json) {
     console.error(
-      `リレーへ問い合わせ中... 各リレーを過去へページング（${relays.length} relays, page-size ${opts.pageSize}, max-pages ${opts.maxPages}）。1 つ落ちても残りで継続します。`,
+      `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, initial-window ${opts.initialWindow}s, dense-threshold ${opts.denseThreshold}）。1 つ落ちても残りで継続します。`,
     );
   }
 
   const { events, meta } = await fetchUserEvents(pubkeyHex, {
     relays,
-    pageSize: Number(opts.pageSize),
-    maxPages: Number(opts.maxPages),
+    initialWindowSeconds: Number(opts.initialWindow),
+    denseThreshold: Number(opts.denseThreshold),
+    minWindowSeconds: Number(opts.minWindow),
+    maxWindows: Number(opts.maxWindows),
     maxEvents: Number(opts.maxEvents),
     sinceUnix,
     timeoutMs: Number(opts.timeout),

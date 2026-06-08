@@ -1,16 +1,28 @@
 /**
  * リレー取得の中核ロジック（環境非依存）。
  *
- * 取得基盤は **nostr-fetch**。`fetchLatestEvents` を「1 ページ」のプリミティブとして
- * 使い、`asOf`(=until) を最古イベントの 1 秒手前へずらしながら **過去へ向かって
- * バックワード・ページング**する。これにより、リレーが返す限り「その人の最初の
- * 投稿」へ向けて遡れる。
+ * 取得基盤は **nostr-fetch**。`fetchAllEvents(relays, filter, {since, until}, opts)`
+ * を「1 つの時間ウィンドウ」のプリミティブとして使い、過去〜現在を **適応的な
+ * タイムウィンドウ（since/until）** に区切って取得する。
+ *
+ * なぜタイムウィンドウか:
+ *  - 旧実装は固定件数のバックワード・ページング（until を最古イベントの 1 秒手前へ
+ *    ずらす）だったが、同一タイムスタンプを境界で共有するイベントが多いと **取りこぼし**
+ *    が起きうる（1 日に 500 件超など）。`since/until` で範囲を明示し、密な期間は
+ *    ウィンドウを分割して掘り直すことで、件数ベースの境界バグを避ける。
+ *  - `fetchAllEvents` 自体が内部で limitPerReq 単位にページングし、ウィンドウ内では
+ *    id で重複排除するので、1 ウィンドウの取得は境界安全。ここでのウィンドウ分割は
+ *    「単一リレーが 1 リクエストで全部返せない（リレー側のキャップ）」場合の保険・
+ *    精緻化レイヤーである。
+ *  - NostrActivity の「日次ウィンドウで遡る」発想を参考に、固定日次ではなく
+ *    **密度に応じて再帰分割する適応ウィンドウ**にした（疎な期間は粗いまま、密な期間
+ *    だけ細かく掘るのでリクエスト数を抑えられる）。
  *
  * 取得戦略（部分継続・フォールトトレラント）:
- *  - **リレーごとに独立してページング**し、グローバルに id で重複排除する。
+ *  - **リレーごとに独立してウィンドウを処理**し、グローバルに id で重複排除する。
  *    1 つのリレーが失敗・タイムアウトしても全体は止めず、応答するリレーから
  *    取得を継続する（「少なくとも 1 つのリレーがデータを返せる限り続ける」）。
- *  - リレー個別の状態（応答/失敗/遡れた最古/ページ数）を RelayStat として持ち帰り、
+ *  - リレー個別の状態（応答/失敗/遡れた最古/ウィンドウ数）を RelayStat として持ち帰り、
  *    HistoryMeta に格納する。UI/README で「どのリレーがどこまで返したか」を可視化する。
  *  - 取得の途中経過は onProgress コールバックで逐次通知する（Web UI のライブ表示・
  *    CLI の進捗行に使う）。
@@ -20,6 +32,7 @@
  *    すべての kind を取得する。継続性・稼働日の判定を全 kind で行うため。
  *  - リレーは保持期間・件数を保証しない。掘り切れたか否か（HistoryMeta）を
  *    正直に持ち帰り、上位（採点・表示）で「履歴が不完全かもしれない」と明示する。
+ *  - **リレーの役割分割（長期用/短期用など）は行わない**。全リレーを同条件で扱う。
  *
  * WebSocket 実装は環境ごとに異なる:
  *  - ブラウザ / Node 22+: ネイティブの WebSocket をそのまま使う。
@@ -35,6 +48,26 @@ import type { HistoryMeta, NostrEvent, RelayStat } from "../types.js";
 export type WebSocketCtor = NonNullable<
   Parameters<typeof NostrFetcher.init>[0]
 >["webSocketConstructor"];
+
+/**
+ * テストシーム用の最小フェッチャ・インターフェイス。
+ * 本番では NostrFetcher がこれを満たす。テストではネットワークに触れない疑似実装を
+ * 注入して、ウィンドウ分割・重複排除・部分失敗などを決定的に検証する。
+ */
+export interface MinimalFetcher {
+  fetchAllEvents(
+    relayUrls: string[],
+    filter: FetchFilter,
+    timeRangeFilter: { since?: number; until?: number },
+    options?: {
+      sort?: boolean;
+      signal?: AbortSignal;
+      connectTimeoutMs?: number;
+      limitPerReq?: number;
+    },
+  ): Promise<NostrEvent[]>;
+  shutdown?: () => void;
+}
 
 /**
  * 取得の途中経過スナップショット。onProgress に渡る。
@@ -57,7 +90,7 @@ export interface FetchProgress {
   oldestReached: number | null;
   /** 観測できたグローバル最新 created_at（UNIX 秒）。 */
   newestReached: number | null;
-  /** これまでに投げた総ページ数（全リレー合計）。 */
+  /** これまでに処理した時間ウィンドウの総数（全リレー合計。旧称 pagesFetched のまま）。 */
   pagesFetched: number;
   /** 取得開始からの経過時間（ms）。 */
   elapsedMs: number;
@@ -70,15 +103,19 @@ export type ProgressCallback = (progress: FetchProgress) => void;
 
 export interface FetchOptions {
   relays: string[];
-  /** 1 ページ（1 リレーあたり）で取得する最大イベント数。 */
-  pageSize?: number;
-  /** バックワード・ページの最大回数（過去を掘る深さの上限・リレーごと）。 */
-  maxPages?: number;
+  /** 最初に範囲を区切る粗いウィンドウ幅（秒）。既定 30 日。 */
+  initialWindowSeconds?: number;
+  /** このイベント数以上を返したウィンドウは中点で分割して掘り直す（密判定）。既定 1000。 */
+  denseThreshold?: number;
+  /** これ以下の幅のウィンドウはそれ以上分割しない（秒）。既定 1 時間。 */
+  minWindowSeconds?: number;
+  /** 1 リレーあたりのウィンドウ処理数の安全上限。既定 5000。 */
+  maxWindows?: number;
   /** 取得イベント数の上限（0/未指定で無制限・グローバル）。 */
   maxEvents?: number;
-  /** 下限時刻（UNIX 秒）。これより古いイベントは取りに行かない。 */
+  /** 下限時刻（UNIX 秒）。これより古いイベントは取りに行かない。未指定なら DEFAULT_SINCE。 */
   sinceUnix?: number;
-  /** 取得開始の上限時刻（UNIX 秒）。未指定なら「現在」。 */
+  /** 取得の上限時刻（UNIX 秒）。未指定なら「現在」。 */
   untilUnix?: number;
   /** 全体のタイムアウト（ms）。 */
   timeoutMs?: number;
@@ -88,24 +125,38 @@ export interface FetchOptions {
   webSocketConstructor?: WebSocketCtor;
   /** 取得の途中経過を受け取るコールバック（任意）。 */
   onProgress?: ProgressCallback;
+  /**
+   * テストシーム。指定すると NostrFetcher.init の代わりにこのフェッチャを使う。
+   * 本番（CLI/ブラウザ）では渡さない。未指定時の挙動は一切変わらない。
+   */
+  fetcher?: MinimalFetcher;
 }
 
 export interface FetchResult {
   events: NostrEvent[];
   /** 実際に問い合わせたリレー数（概算）。 */
   relaysQueried: number;
-  /** 取得（ページング）のメタ情報。 */
+  /** 取得（タイムウィンドウ）のメタ情報。 */
   meta: HistoryMeta;
 }
 
+/**
+ * 下限時刻の既定値。2021-01-01 00:00:00 UTC = 1609459200。
+ * Nostr の実用上ほぼ全履歴をカバーする床（旧実装は実質「リレーが返す限界＝初投稿」
+ * まで遡っていた）。これ以前のイベントは取りに行かない。
+ */
+export const DEFAULT_SINCE = 1609459200;
+
 const DEFAULTS = {
-  pageSize: 500,
-  maxPages: 40,
+  initialWindowSeconds: 2592000, // 30 日
+  denseThreshold: 1000,
+  minWindowSeconds: 3600, // 1 時間
+  maxWindows: 5000,
   maxEvents: 0, // 0 = 無制限
   timeoutMs: 12000,
 } as const;
 
-/** 終端（これ以上ページしない）状態か。 */
+/** 終端（これ以上ウィンドウを処理しない）状態か。 */
 function isTerminal(status: RelayStat["status"]): boolean {
   return status !== "pending" && status !== "querying";
 }
@@ -115,10 +166,16 @@ function isFailure(status: RelayStat["status"]): boolean {
   return status === "failed" || status === "timeout";
 }
 
+/** 1 つの時間ウィンドウ（[since, until)）。 */
+interface Window {
+  since: number;
+  until: number;
+}
+
 /**
- * 指定 pubkey(hex) のイベントを、過去へ向かってページングしながら取得する。
+ * 指定 pubkey(hex) のイベントを、適応的タイムウィンドウで取得する。
  *
- * 各リレーを独立にページングし、グローバルに重複排除する。1 つのリレーが
+ * 各リレーを独立にウィンドウ処理し、グローバルに重複排除する。1 つのリレーが
  * 失敗しても全体は止めない（部分継続）。取得とスコアリングを分離しているため、
  * 戻り値の events 配列をそのまま scoreEvents() に渡せる（CLI / Web で共通）。
  */
@@ -126,24 +183,34 @@ export async function queryUserEvents(
   pubkeyHex: string,
   opts: FetchOptions,
 ): Promise<FetchResult> {
-  const pageSize = clampPositive(opts.pageSize, DEFAULTS.pageSize);
-  const maxPages = clampPositive(opts.maxPages, DEFAULTS.maxPages);
+  const initialWindow = clampPositive(
+    opts.initialWindowSeconds,
+    DEFAULTS.initialWindowSeconds,
+  );
+  const denseThreshold = clampPositive(
+    opts.denseThreshold,
+    DEFAULTS.denseThreshold,
+  );
+  const minWindow = clampPositive(opts.minWindowSeconds, DEFAULTS.minWindowSeconds);
+  const maxWindows = clampPositive(opts.maxWindows, DEFAULTS.maxWindows);
   const maxEvents = Math.max(0, opts.maxEvents ?? DEFAULTS.maxEvents);
   const timeoutMs = clampPositive(opts.timeoutMs, DEFAULTS.timeoutMs);
   const nowSec = Math.floor(Date.now() / 1000);
-  const untilInit = opts.untilUnix ?? nowSec;
-  const sinceUnix = opts.sinceUnix;
+  const until = opts.untilUnix ?? nowSec;
+  const since = opts.sinceUnix ?? DEFAULT_SINCE;
   const onProgress = opts.onProgress;
 
   const filter: FetchFilter = opts.kinds
     ? { authors: [pubkeyHex], kinds: opts.kinds }
     : { authors: [pubkeyHex] };
 
-  const fetcher = NostrFetcher.init(
-    opts.webSocketConstructor
-      ? { webSocketConstructor: opts.webSocketConstructor }
-      : undefined,
-  );
+  const fetcher: MinimalFetcher =
+    opts.fetcher ??
+    NostrFetcher.init(
+      opts.webSocketConstructor
+        ? { webSocketConstructor: opts.webSocketConstructor }
+        : undefined,
+    );
 
   const startedAt = Date.now();
   const ac = new AbortController();
@@ -153,14 +220,13 @@ export async function queryUserEvents(
   const collected = new Map<string, NostrEvent>();
   let newestGlobal: number | null = null;
   let globalCapHit = false; // maxEvents に到達
-  let sinceBoundHit = false; // --since の下限まで遡った
 
   // リレー個別の状態（そのまま FetchProgress / HistoryMeta に出す）。
   const runtimes: RelayStat[] = opts.relays.map((url) => ({
     url,
     status: "pending",
     events: 0,
-    pages: 0,
+    pages: 0, // ウィンドウ処理数として使う（フィールド名は互換のため維持）。
     oldestReached: null,
   }));
 
@@ -178,9 +244,9 @@ export async function queryUserEvents(
     let succeeded = 0;
     let failed = 0;
     let completed = 0;
-    let pages = 0;
+    let windows = 0;
     for (const r of runtimes) {
-      pages += r.pages;
+      windows += r.pages;
       if (r.oldestReached != null) {
         oldest = oldest == null ? r.oldestReached : Math.min(oldest, r.oldestReached);
       }
@@ -199,20 +265,34 @@ export async function queryUserEvents(
       collectedUnique: collected.size,
       oldestReached: oldest,
       newestReached: newestGlobal,
-      pagesFetched: pages,
+      pagesFetched: windows,
       elapsedMs: Date.now() - startedAt,
       relays: runtimes.map((r) => ({ ...r })),
     };
   }
 
-  /** 1 リレーを独立にバックワード・ページングする。例外は内部で握りつぶす。 */
+  /**
+   * [since, until] を initialWindow 幅で粗くタイル分割した初期ウィンドウ列を作る。
+   * 新しい側を先に処理すると oldestReached が進んで進捗が直感的なので、新しい順に積む
+   * （スタック＝末尾から取り出すので、末尾に最も新しいウィンドウが来るよう並べる）。
+   */
+  function seedWindows(): Window[] {
+    const wins: Window[] = [];
+    for (let s = since; s < until; s += initialWindow) {
+      const u = Math.min(s + initialWindow, until);
+      wins.push({ since: s, until: u });
+    }
+    if (wins.length === 0) wins.push({ since, until }); // since>=until の保険。
+    return wins; // 末尾が最新ウィンドウ＝スタックで最初に処理される。
+  }
+
+  /** 1 リレーを独立に、適応的タイムウィンドウで処理する。例外は内部で握りつぶす。 */
   async function runRelay(rt: RelayStat): Promise<void> {
     rt.status = "querying";
     emit();
-    let cursor = untilInit; // 次ページの until（これより古い分を取りに行く）
-    let prevOldest = Number.POSITIVE_INFINITY;
+    const stack: Window[] = seedWindows();
 
-    for (;;) {
+    while (stack.length > 0) {
       if (ac.signal.aborted || Date.now() - startedAt >= timeoutMs) {
         rt.status = "timeout";
         break;
@@ -222,18 +302,26 @@ export async function queryUserEvents(
         rt.status = rt.status === "querying" ? "ok" : rt.status;
         break;
       }
-      if (rt.pages >= maxPages) {
-        rt.status = "maxPages";
+      if (rt.pages >= maxWindows) {
+        rt.status = "maxWindows";
         break;
       }
 
-      let page: NostrEvent[];
+      const w = stack.pop() as Window;
+
+      let evs: NostrEvent[];
       try {
-        page = (await fetcher.fetchLatestEvents([rt.url], filter, pageSize, {
-          asOf: cursor,
-          signal: ac.signal,
-          connectTimeoutMs: Math.min(timeoutMs, 5000),
-        })) as NostrEvent[];
+        evs = await fetcher.fetchAllEvents(
+          [rt.url],
+          filter,
+          { since: w.since, until: w.until },
+          {
+            sort: false,
+            signal: ac.signal,
+            connectTimeoutMs: Math.min(timeoutMs, 5000),
+            limitPerReq: 5000,
+          },
+        );
       } catch (err) {
         if (ac.signal.aborted || Date.now() - startedAt >= timeoutMs) {
           rt.status = "timeout";
@@ -241,67 +329,61 @@ export async function queryUserEvents(
           rt.status = "failed";
           rt.error = err instanceof Error ? err.message : String(err);
         }
+        // 既に集めた分は捨てない（部分成功）。他リレーは別途継続する。
         break;
       }
       rt.pages++;
 
-      if (page.length === 0) {
-        // 1 ページ目で 0 件＝このリレーには対象の投稿が無い。
-        // 2 ページ目以降の 0 件＝これ以上古いイベントを返さない（遡り切り）。
-        rt.status = rt.pages === 1 ? "empty" : "exhausted";
-        break;
-      }
-      rt.events += page.length;
-
-      let oldestInPage = Number.POSITIVE_INFINITY;
-      for (const ev of page) {
+      let oldestInWin = Number.POSITIVE_INFINITY;
+      for (const ev of evs) {
         if (!collected.has(ev.id)) collected.set(ev.id, ev);
-        if (ev.created_at < oldestInPage) oldestInPage = ev.created_at;
+        if (ev.created_at < oldestInWin) oldestInWin = ev.created_at;
         if (newestGlobal == null || ev.created_at > newestGlobal) {
           newestGlobal = ev.created_at;
         }
       }
-      rt.oldestReached =
-        rt.oldestReached == null
-          ? oldestInPage
-          : Math.min(rt.oldestReached, oldestInPage);
-
-      // 最古が過去へ進まない＝リレーが until を無視している等。これ以上掘れない。
-      if (oldestInPage >= prevOldest) {
-        rt.status = "noProgress";
-        break;
+      rt.events += evs.length;
+      if (evs.length > 0) {
+        rt.oldestReached =
+          rt.oldestReached == null
+            ? oldestInWin
+            : Math.min(rt.oldestReached, oldestInWin);
       }
-      prevOldest = oldestInPage;
 
+      // 件数上限に到達したら、このリレーは正常打ち切り（グローバルにも伝播）。
       if (maxEvents > 0 && collected.size >= maxEvents) {
         globalCapHit = true;
         rt.status = "ok";
         emit(true);
         break;
       }
-      if (sinceUnix != null && oldestInPage <= sinceUnix) {
-        sinceBoundHit = true;
-        rt.status = "exhausted";
-        break;
-      }
-      // ページが満杯でない＝リレーにこれ以上古いイベントが無い見込み。
-      if (page.length < pageSize) {
-        rt.status = "exhausted";
-        break;
+
+      // ── 適応分割 ──
+      // ウィンドウが密（>= 閾値）かつ最小幅より広いなら、中点で 2 分割して掘り直す。
+      // リレーが 1 リクエストで返し切れていない可能性に備える保険。重複は dedupe が吸収。
+      if (evs.length >= denseThreshold && w.until - w.since > minWindow) {
+        const mid = w.since + Math.floor((w.until - w.since) / 2);
+        // 新しい側（[mid, until)）を後に積み、先に処理されるようにする。
+        stack.push({ since: w.since, until: mid });
+        stack.push({ since: mid, until: w.until });
+        emit(); // 分割が起きたことを進捗に反映（任意）。
       }
 
-      cursor = oldestInPage - 1; // 次は厳密に 1 秒手前から（重複と無限ループ防止）。
       emit();
+    }
+    // 正常に全ウィンドウを処理し終えた場合。
+    if (rt.status === "querying") {
+      rt.status = stack.length === 0 ? (rt.events === 0 ? "empty" : "ok") : rt.status;
     }
     emit(true);
   }
 
   try {
-    // すべてのリレーを並行にページング。1 つが失敗しても他は続く。
+    // すべてのリレーを並行に処理。1 つが失敗しても他は続く。
     await Promise.allSettled(runtimes.map((rt) => runRelay(rt)));
   } finally {
     clearTimeout(deadline);
-    fetcher.shutdown();
+    fetcher.shutdown?.();
   }
   emit(true);
 
@@ -318,37 +400,43 @@ export async function queryUserEvents(
   const relaysFailed = runtimes.filter((r) => isFailure(r.status)).length;
   const relaysSucceeded = runtimes.length - relaysFailed;
   const timedOut = runtimes.some((r) => r.status === "timeout");
-  const hitPageCap = runtimes.some((r) => r.status === "maxPages");
+  const hitWindowCap = runtimes.some((r) => r.status === "maxWindows");
   const hitEventCap = globalCapHit;
-  const noProgress = runtimes.some((r) => r.status === "noProgress");
-  const reachedOldestAvailable = runtimes.some((r) => r.status === "exhausted");
+  // 少なくとも 1 つのリレーが「正常終了（ok/empty）」なら、要求範囲 [since, until] は
+  // 覆い切れたとみなす（リレーは冗長で、グローバル重複排除で結果は統合されるため）。
+  const anyCovered = runtimes.some(
+    (r) => r.status === "ok" || r.status === "empty",
+  );
 
   // 最も「掘り切れていない」理由を優先して 1 つ選ぶ（表示用の単一 enum）。
+  // 件数上限・タイムアウト・ウィンドウ上限は「範囲を覆い切れていない」打ち切りなので、
+  // anyCovered（健全リレーが覆い切った）より優先する。
   let stopReason: HistoryMeta["stopReason"];
   if (collected.size === 0 && relaysFailed === runtimes.length) {
     stopReason = "error";
-  } else if (timedOut) {
-    stopReason = "timeout";
   } else if (hitEventCap) {
     stopReason = "maxEvents";
-  } else if (hitPageCap) {
-    stopReason = "maxPages";
-  } else if (sinceBoundHit) {
-    stopReason = "sinceBound";
-  } else if (reachedOldestAvailable) {
-    stopReason = "exhausted";
-  } else if (noProgress) {
-    stopReason = "noProgress";
+  } else if (timedOut && !anyCovered) {
+    stopReason = "timeout";
+  } else if (hitWindowCap && !anyCovered) {
+    stopReason = "maxWindows";
+  } else if (anyCovered) {
+    // 健全なリレーが範囲を覆い切れたなら正常終了。失敗の事実は relayStats / relaysFailed へ。
+    stopReason = "ok";
   } else {
-    stopReason = "exhausted";
+    // どのリレーも覆い切れず、明確な打ち切り理由も特定できない場合の保険。
+    stopReason = "error";
   }
+
+  // 範囲を覆い切れたリレーが 1 つでもあり、件数上限で切っていなければ完全とみなす。
+  const historyComplete = stopReason === "ok";
 
   const meta: HistoryMeta = {
     pagesFetched: runtimes.reduce((s, r) => s + r.pages, 0),
     stopReason,
-    reachedOldestAvailable,
-    // 「掘り切れた見込み」: 応答したリレーを自然終了まで遡れた／下限時刻まで到達。
-    historyComplete: stopReason === "exhausted" || stopReason === "sinceBound",
+    // 明示的に since までウィンドウで覆うので、到達度 = 履歴完全性と同義に定義する。
+    reachedOldestAvailable: historyComplete,
+    historyComplete,
     oldestCreatedAt,
     newestCreatedAt,
     relaysQueried: opts.relays.length,
@@ -357,9 +445,9 @@ export async function queryUserEvents(
     relayStats: runtimes.map((r) => ({ ...r })),
     elapsedMs: Date.now() - startedAt,
     hitEventCap,
-    hitPageCap,
+    hitPageCap: hitWindowCap, // フィールド名は互換維持。意味は「ウィンドウ上限」。
     timedOut,
-    noProgress,
+    noProgress: false, // 適応ウィンドウ方式では無進捗の概念が無い。
   };
 
   return { events, relaysQueried: opts.relays.length, meta };

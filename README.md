@@ -38,15 +38,18 @@ Nostr の公開投稿パターンから、その人の **「廃人度（Haijin s
 
 - **説明可能**: すべてのスコアに「なぜその点数なのか」の根拠（reason）が付きます。
 - **ローカル完結**: リレーへ直接 WebSocket 接続。API キーやサーバー不要。
-- **過去へ遡る取得**: [nostr-fetch](https://github.com/jiftechnify/nostr-fetch) を基盤に、
-  `until` を 1 ページごとに過去へずらしながら**バックワード・ページング**で
-  初投稿方向へ遡ります（[取得方針](#取得方針バックワードページング) を参照）。
-- **リレー単位で並行取得・部分継続**: 各リレーを独立にページングし、グローバルに
+- **過去へ遡る取得（適応的タイムウィンドウ）**: [nostr-fetch](https://github.com/jiftechnify/nostr-fetch)
+  の `fetchAllEvents(relays, filter, {since, until})` を基盤に、`[since, until]` を
+  **時間ウィンドウ（since/until）**に区切って取得します。**投稿が密なウィンドウは
+  中点で再帰分割して掘り直す**ため、1 日に多数投稿しても件数境界で取りこぼしにくく
+  なります（[取得方針](#取得方針適応的タイムウィンドウ) を参照）。
+- **リレー単位で並行取得・部分継続**: 各リレーを独立にウィンドウ処理し、グローバルに
   重複排除します。**1 つのリレーが失敗・タイムアウトしても全体は止めず**、応答する
   リレーから取得を継続します（「少なくとも 1 つのリレーが返せる限り続ける」）。
   失敗したリレーは `history.relayStats` と `notes` に正直に記録します。
+  **リレーの役割分割（長期用/短期用）は行わず**、全リレーを同条件で扱います。
 - **取得進捗の可視化**: 取得中、CLI は stderr に進捗行（応答リレー数・取得件数・
-  ページ数・遡れた最古・経過時間）をライブ表示し、Web 版はリレー個別の状態を含む
+  ウィンドウ数・遡れた最古・経過時間）をライブ表示し、Web 版はリレー個別の状態を含む
   進捗パネルを逐次更新します。`onProgress` コールバックで途中経過を受け取れます。
 - **全 kind 取得**: kind を限定せず全イベントを取得し、稼働日・継続性の判定に算入します。
 - **履歴の完全性を可視化**: どこまで遡れたか・掘り切れたか（complete / incomplete）を
@@ -101,10 +104,12 @@ npm run dev -- <npub>
 | オプション | 説明 | デフォルト |
 | --- | --- | --- |
 | `-r, --relays <urls>` | カンマ区切りのリレー URL。未指定ならデフォルト一式 | （内蔵リレー） |
-| `--page-size <n>` | 1 ページ（バックワード取得 1 回）で取りに行く最大イベント数 | `500` |
-| `--max-pages <n>` | 過去へ遡るページの最大回数（深く掘るほど初投稿に近づく） | `40` |
+| `--initial-window <sec>` | 最初に範囲を区切る粗いウィンドウ幅（秒） | `2592000`（30 日） |
+| `--dense-threshold <n>` | この件数以上を返したウィンドウは中点で分割して掘り直す（密判定） | `1000` |
+| `--min-window <sec>` | これ以下の幅のウィンドウはそれ以上分割しない（秒） | `3600`（1 時間） |
+| `--max-windows <n>` | 1 リレーあたりのウィンドウ処理数の安全上限 | `5000` |
 | `--max-events <n>` | 取得イベント総数の上限（`0` で無制限） | `0` |
-| `--since <unixsec>` | この時刻 (UNIX 秒) より古いイベントは取りに行かない（下限） | （なし） |
+| `--since <unixsec>` | この時刻 (UNIX 秒) より古いイベントは取りに行かない（下限） | `1609459200`（2021-01-01） |
 | `-t, --tz <hours>` | 時間分布の判定に使う UTC オフセット（時間） | `9`（JST） |
 | `--timeout <ms>` | 取得全体のタイムアウト（ミリ秒） | `12000` |
 | `--json` | JSON で出力 | off |
@@ -112,9 +117,11 @@ npm run dev -- <npub>
 | `-V, --version` | バージョン表示 | |
 
 > 旧版の `-l, --limit`（リレーごとの件数上限）は廃止されました。取得は
-> nostr-fetch によるバックワード・ページングに変わり、件数ではなく
-> 「何ページ遡るか（`--max-pages`）／総件数の上限（`--max-events`）／
-> どこまで古い時刻まで（`--since`）」で深さを制御します。
+> nostr-fetch による**適応的タイムウィンドウ**に変わり、件数ベースの
+> `--page-size` / `--max-pages` も廃止しました。深さは「どこまで古い時刻まで
+> （`--since`）」「密なウィンドウの分割しきい値（`--dense-threshold`）」
+> 「ウィンドウ数の安全上限（`--max-windows`）」「総件数の上限（`--max-events`）」で
+> 制御します。
 >
 > 旧版の `--late-start` / `--late-end`（深夜帯の指定）も廃止しました。「深夜が多い＝
 > 廃人」という粗い基準をやめ、**稼働時間帯の広さ（常時稼働度）** を測る設計に
@@ -125,33 +132,41 @@ npm run dev -- <npub>
 取得中は stderr に進捗行を**ライブ更新**します（`--json` 時は出しません）。
 
 ```
-取得中... リレー 5/7 応答 ・ 1638 件 ・ 8 ページ ・ 最古 2022-12-16 ・ 2.6s
+取得中... リレー 5/7 応答 ・ 1638 件 ・ 8 ウィンドウ ・ 最古 2022-12-16 ・ 2.6s
 ```
 
-- 応答／失敗したリレー数、これまでに集めたユニーク件数、総ページ数、
+- 応答／失敗したリレー数、これまでに集めたユニーク件数、処理した総ウィンドウ数、
   ここまで遡れた最古の日付、経過時間を数値で表示します。
 - 各リレーは独立に取得するため、**1 つが落ちても進捗は止まりません**。
   失敗したリレー数は進捗行・最終出力（`取得:` 行）・`notes` に反映されます。
 
-#### 取得方針（バックワード・ページング）
+#### 取得方針（適応的タイムウィンドウ）
 
 取得基盤は [nostr-fetch](https://github.com/jiftechnify/nostr-fetch) です。
 フィルタは **authors のみ（kinds 指定なし＝全 kind）** でリレーへ問い合わせ、
-`fetchLatestEvents` を「1 ページ」のプリミティブとして使い、`until`（=最古イベントの
-1 秒手前）へずらしながら **過去へ向かってページング**します。
+`fetchAllEvents(relays, filter, {since, until})` を「1 つの時間ウィンドウ」の
+プリミティブとして使います。`[since, until]`（`--since` 〜 現在）を
+`--initial-window`（既定 30 日）でタイル分割し、各ウィンドウを取得します。
 
-**リレーは 1 つずつ独立にページング**し、結果をグローバルに id で重複排除します。
-あるリレーが接続失敗・タイムアウトしても**そのリレーだけを打ち切り、残りのリレーは
-取得を続行**します（部分継続）。リレー個別の到達状況（応答／失敗／遡れた最古／
-ページ数）は `history.relayStats` に記録されます。
+**密なウィンドウは中点で再帰分割**します。あるウィンドウが `--dense-threshold`
+（既定 1000）件以上を返し、かつ幅が `--min-window`（既定 1 時間）より広ければ、
+中点で 2 つの子ウィンドウに分割して掘り直します。これは、リレーが 1 リクエストで
+全件を返し切れない（リレー側のキャップ）場合でも取りこぼさないための保険です。
+`fetchAllEvents` 自体もウィンドウ内で内部ページング・重複排除を行うため、
+1 ウィンドウの取得は境界安全で、件数境界で起きうる取りこぼしを避けられます。
 
-各リレーは次のいずれかに達するまで遡ります。
+**リレーは 1 つずつ独立にウィンドウ処理**し、結果をグローバルに id で重複排除します
+（同一 id が複数リレー／重なるウィンドウから来ても 1 件）。あるリレーが接続失敗・
+タイムアウトしても**そのリレーだけを打ち切り、残りのリレーは取得を続行**します
+（部分継続）。**リレーの役割分割（長期用/短期用）は行いません**。リレー個別の到達状況
+（応答／失敗／遡れた最古／処理ウィンドウ数）は `history.relayStats` に記録されます。
 
-- **リレーがこれ以上古いイベントを返さなくなる**（= その人の初投稿に近づく / `exhausted`）
-- `--max-pages` に達する（`maxPages`）
+各リレーは次のいずれかに達するまで処理します。
+
+- **要求範囲 `[since, until]` を全ウィンドウ覆い切る**（正常終了 / `ok`）
+- `--max-windows` に達する（`maxWindows`）
 - `--max-events` に達する（`maxEvents`）
-- `--since` の下限時刻に達する（`sinceBound`）
-- `--timeout` を超える（`timeout`）／最古が進まず打ち切り（`noProgress`）
+- `--timeout` を超える（`timeout`）
 
 全 kind を取得するのは、kind1 以外（リアクション kind7・フォロー kind3 など）だけの
 日も**実稼働日・継続性に算入する**ためです。
@@ -316,10 +331,10 @@ npub: npub1example...newbie
 → **A と B は短期では同等でも、長期継続では明確に区別されます。**
 旧版のように「7 日の観測を 3 年の継続と取り違える」ことはありません。
 
-> 注: 取得は複数リレーへバックワード・ページングし、id で重複排除します。
+> 注: 取得は複数リレーへ適応的タイムウィンドウで問い合わせ、id で重複排除します。
 > どこまで遡れたか（履歴を掘り切れたか）は出力末尾の「取得:」行と `notes`、
-> JSON では `history` フィールドで確認できます。深く遡るには `--max-pages` /
-> `--max-events` / `--timeout` を増やしてください。
+> JSON では `history` フィールドで確認できます。深く遡るには `--since` を緩める／
+> `--max-windows` / `--max-events` / `--timeout` を増やしてください。
 
 ### JSON 出力
 
@@ -362,7 +377,7 @@ $ node dist/index.js <npub> --json
   "timezone": "JST",
   "history": {
     "pagesFetched": 12,
-    "stopReason": "exhausted",
+    "stopReason": "ok",
     "reachedOldestAvailable": true,
     "historyComplete": true,
     "oldestCreatedAt": 1700000000,
@@ -371,7 +386,7 @@ $ node dist/index.js <npub> --json
     "relaysSucceeded": 4,
     "relaysFailed": 1,
     "relayStats": [
-      { "url": "wss://relay.damus.io", "status": "exhausted", "events": 210, "pages": 6, "oldestReached": 1700000000 },
+      { "url": "wss://relay.damus.io", "status": "ok", "events": 210, "pages": 6, "oldestReached": 1700000000 },
       { "url": "wss://nos.lol", "status": "empty", "events": 0, "pages": 1, "oldestReached": null },
       { "url": "wss://dead.example", "status": "failed", "events": 0, "pages": 0, "oldestReached": null, "error": "connection refused" }
     ],
@@ -385,35 +400,42 @@ $ node dist/index.js <npub> --json
 }
 ```
 
-`history` は取得（バックワード・ページング）のメタ情報です。取得経路を介さず
+`history` は取得（適応的タイムウィンドウ）のメタ情報です。取得経路を介さず
 イベント配列を直接採点した場合は `null` になります。
+
+> 互換のため一部フィールド名は旧称のままです（意味が変わったものは下表に明記）。
+> `pagesFetched` / `relayStats[].pages` は**処理したウィンドウ数**、`hitPageCap` は
+> **ウィンドウ数上限に当たったか**、`noProgress` は廃止され常に `false` です。
 
 | フィールド | 意味 |
 | --- | --- |
-| `pagesFetched` | 実行したページ数（過去へ遡った回数） |
-| `stopReason` | 停止理由（`exhausted` / `maxPages` / `maxEvents` / `sinceBound` / `noProgress` / `timeout` / `error`） |
-| `reachedOldestAvailable` | リレーがこれ以上古いイベントを返さなくなったか |
-| `historyComplete` | 履歴を掘り切れた「見込み」か（`exhausted` または `sinceBound` のとき true。best-effort） |
+| `pagesFetched` | 処理した時間ウィンドウの総数（旧称のまま） |
+| `stopReason` | 停止理由（`ok` / `maxWindows` / `maxEvents` / `timeout` / `error`） |
+| `reachedOldestAvailable` | 要求範囲（`--since` まで）を覆い切れたか（本実装では `historyComplete` と同義） |
+| `historyComplete` | 履歴を掘り切れた「見込み」か（`stopReason==="ok"` のとき true。best-effort） |
 | `oldestCreatedAt` / `newestCreatedAt` | 観測できた最古／最新の投稿時刻（UNIX 秒。0 件なら null） |
 | `relaysQueried` | 問い合わせたリレー数 |
 | `relaysSucceeded` / `relaysFailed` | 応答した／失敗・タイムアウトしたリレー数（部分継続の指標） |
-| `relayStats` | リレー個別の取得結果（`url` / `status` / `events` / `pages` / `oldestReached` / `error`） |
+| `relayStats` | リレー個別の取得結果（`url` / `status` / `events` / `pages`(=ウィンドウ数) / `oldestReached` / `error`） |
 | `elapsedMs` | 取得にかかった時間 |
-| `hitEventCap` / `hitPageCap` / `timedOut` / `noProgress` | それぞれの上限・打ち切りに当たったか |
+| `hitEventCap` | 件数上限（`maxEvents`）に当たったか |
+| `hitPageCap` | ウィンドウ数上限（`maxWindows`）に当たったか（旧称のまま） |
+| `timedOut` | タイムアウト／中断したか |
+| `noProgress` | 廃止（常に `false`） |
 
-> `relayStats[].status` は `ok`（件数上限などで正常に打ち切り）/ `exhausted`（遡り切り）/
+> `relayStats[].status` は `ok`（全ウィンドウ処理完了／件数上限での正常打ち切り）/
 > `empty`（このリレーには投稿なし）/ `failed`（接続失敗）/ `timeout`（時間切れ）/
-> `noProgress`（最古が進まず打ち切り）/ `maxPages`（ページ上限）のいずれかです。
+> `maxWindows`（ウィンドウ数上限）のいずれかです。
 > `failed` / `timeout` のリレーがあっても、残りのリレーから取得は継続されます。
 
-> **「complete」と「incomplete」の意味**: `historyComplete=true` は、リレーが古い
-> イベントを返さなくなった（`exhausted`）か、指定下限まで遡った（`sinceBound`）
-> ことを表す **best-effort の見込み**です。リレーは履歴の完全性を保証しないため、
-> `exhausted` でも「観測できた最古」が**本当の初投稿とは限りません**（リレーが
-> 古いイベントを破棄している可能性があります）。一方 `historyComplete=false`
-> （上限・タイムアウト・無進捗で打ち切り）のときは、それより前にも投稿がある
-> 可能性が高く、長期継続・古参度は**過小評価され得ます**。いずれの場合も `notes`
-> に正直な但し書きが入ります。
+> **「complete」と「incomplete」の意味**: `historyComplete=true` は、健全なリレーが
+> 要求範囲 `[--since, 現在]` を全ウィンドウ覆い切った（`stopReason==="ok"`）ことを表す
+> **best-effort の見込み**です。リレーは履歴の完全性を保証しないため、`ok` でも
+> 「観測できた最古」が**本当の初投稿とは限りません**（リレーが古いイベントを破棄
+> している可能性、または `--since` の床より前にも投稿がある可能性）。一方
+> `historyComplete=false`（ウィンドウ数上限・件数上限・タイムアウト・全リレー失敗で
+> 打ち切り）のときは、それより前にも投稿がある可能性が高く、長期継続・古参度は
+> **過小評価され得ます**。いずれの場合も `notes` に正直な但し書きが入ります。
 
 ---
 
@@ -431,19 +453,19 @@ GitHub Pages にそのままデプロイできます。
 | UI 項目 | 対応する CLI | 既定値 |
 | --- | --- | --- |
 | Relays | `--relays` | 内蔵リレー |
-| Page size | `--page-size` | `500` |
-| Max pages | `--max-pages` | `20` |
+| 分割しきい値（密判定の件数） | `--dense-threshold` | `1000` |
+| 最大ウィンドウ数（遡る深さ） | `--max-windows` | `5000` |
 | Timezone | `--tz` | `9` |
 | Timeout | `--timeout` | `15000`(ms) |
 
 取得中は、フォームの下に**ライブ進捗パネル**を表示します（`onProgress` で逐次更新）。
 
-- 大きな数値で **取得イベント数 / 応答リレー数 / 失敗リレー数 / 取得ページ数** を表示。
+- 大きな数値で **取得イベント数 / 応答リレー数 / 失敗リレー数 / 取得ウィンドウ数** を表示。
 - **ここまで遡れた最古の日時・経過時間・完了リレー数**を併記。
-- **リレー個別の状態リスト**（取得中／完了／遡り切り／投稿なし／接続失敗／時間切れ…）を
+- **リレー個別の状態リスト**（取得中／完了／投稿なし／接続失敗／時間切れ／ウィンドウ上限…）を
   色分けして逐次更新。1 つのリレーが失敗しても他はそのまま進みます。
 - 完了時はステータス欄に
-  `完了: <件数> 件を採点（応答 a/b リレー・<ページ数> ページ・履歴 …）。` を表示します。
+  `完了: <件数> 件を採点（応答 a/b リレー・<ウィンドウ数> ウィンドウ・履歴 …）。` を表示します。
   履歴部分は掘り切れたかで文言が変わります
   — 掘り切れた場合は **「リレーが返す限界まで到達」**、
   途中で打ち切った場合は **「掘り切れず（<停止理由>）」**。

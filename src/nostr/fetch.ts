@@ -2,7 +2,7 @@
  * リレーからイベントを取得するモジュール（Node.js / CLI 用）。
  *
  * 取得本体は環境非依存の queryUserEvents（query.ts）＝ nostr-fetch ベースの
- * バックワード・ページング。Node 18-21 にはグローバル WebSocket が無いため、
+ * 適応的タイムウィンドウ取得。Node 18-21 にはグローバル WebSocket が無いため、
  * ws を webSocketConstructor として注入してから委譲する。
  * （Node 22+ はネイティブ WebSocket があるが、互換のため常に注入しておく。）
  *

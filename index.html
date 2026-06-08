@@ -37,24 +37,25 @@
         </label>
 
         <details class="advanced">
-          <summary>詳細設定（リレー・ページング・タイムゾーン）</summary>
+          <summary>詳細設定（リレー・取得ウィンドウ・タイムゾーン）</summary>
           <div class="advanced-body">
             <label class="field">
               <span class="field-label">リレー（1行に1つ・<code>wss://</code> のみ）</span>
               <textarea id="relays" name="relays" rows="5" spellcheck="false"></textarea>
             </label>
             <p class="hint">
-              <code>npub</code> の全 kind を<strong>過去へページング</strong>して、
-              リレーが返す限り初投稿へ向けて遡ります。深く掘るほど時間がかかります。
+              <code>npub</code> の全 kind を<strong>時間ウィンドウ（since/until）</strong>で
+              区切って取得し、投稿が密な期間はウィンドウを分割して掘り直します。深く掘るほど
+              時間がかかります。
             </p>
             <div class="field-row">
               <label class="field">
-                <span class="field-label">1ページの件数</span>
-                <input id="pageSize" name="pageSize" type="number" min="50" max="2000" step="50" value="500" />
+                <span class="field-label">分割しきい値（密判定の件数）</span>
+                <input id="denseThreshold" name="denseThreshold" type="number" min="50" max="5000" step="50" value="1000" />
               </label>
               <label class="field">
-                <span class="field-label">最大ページ数（遡る深さ）</span>
-                <input id="maxPages" name="maxPages" type="number" min="1" max="200" value="20" />
+                <span class="field-label">最大ウィンドウ数（遡る深さ）</span>
+                <input id="maxWindows" name="maxWindows" type="number" min="1" max="20000" value="5000" />
               </label>
             </div>
             <div class="field-row">

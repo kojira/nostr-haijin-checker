@@ -39,8 +39,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 const form = $<HTMLFormElement>("form");
 const npubInput = $<HTMLInputElement>("npub");
 const relaysInput = $<HTMLTextAreaElement>("relays");
-const pageSizeInput = $<HTMLInputElement>("pageSize");
-const maxPagesInput = $<HTMLInputElement>("maxPages");
+const denseThresholdInput = $<HTMLInputElement>("denseThreshold");
+const maxWindowsInput = $<HTMLInputElement>("maxWindows");
 const tzInput = $<HTMLInputElement>("tz");
 const timeoutInput = $<HTMLInputElement>("timeout");
 const submitBtn = $<HTMLButtonElement>("submit");
@@ -152,8 +152,8 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     return;
   }
 
-  const pageSize = clampNum(Number(pageSizeInput.value), 50, 2000, 500);
-  const maxPages = clampNum(Number(maxPagesInput.value), 1, 200, 20);
+  const denseThreshold = clampNum(Number(denseThresholdInput.value), 50, 5000, 1000);
+  const maxWindows = clampNum(Number(maxWindowsInput.value), 1, 20000, 5000);
   const timeoutMs = clampNum(Number(timeoutInput.value), 1000, 60000, 15000);
   const tz = clampNum(Number(tzInput.value), -12, 14, 9);
 
@@ -171,14 +171,14 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
 
   setBusy(
     true,
-    `リレーへ問い合わせ中... 各リレーを過去へページング（${relays.length} relays, page-size ${pageSize}, max-pages ${maxPages}）。`,
+    `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, dense-threshold ${denseThreshold}, max-windows ${maxWindows}）。`,
   );
 
   try {
     const { events, meta } = await fetchUserEvents(pubkeyHex, {
       relays,
-      pageSize,
-      maxPages,
+      denseThreshold,
+      maxWindows,
       timeoutMs,
       // 取得の途中経過をライブ表示する（リレー応答数・件数・遡れた最古など）。
       onProgress: (p) => renderProgress(p),
@@ -199,7 +199,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       meta.relaysFailed > 0 ? `・失敗 ${meta.relaysFailed} リレー` : "";
     setBusy(
       false,
-      `完了: ${result.sampleSize} 件を採点（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー${failPart}・${meta.pagesFetched} ページ・履歴 ${dug}）。`,
+      `完了: ${result.sampleSize} 件を採点（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー${failPart}・${meta.pagesFetched} ウィンドウ・履歴 ${dug}）。`,
     );
   } catch (err) {
     console.error(err);
@@ -214,10 +214,8 @@ const RELAY_STATUS_VIEW: Record<RelayStat["status"], { label: string; cls: strin
   pending: { label: "待機", cls: "rs-pending" },
   querying: { label: "取得中…", cls: "rs-active" },
   ok: { label: "完了", cls: "rs-ok" },
-  exhausted: { label: "遡り切り", cls: "rs-ok" },
   empty: { label: "投稿なし", cls: "rs-empty" },
-  noProgress: { label: "打ち切り", cls: "rs-ok" },
-  maxPages: { label: "ページ上限", cls: "rs-ok" },
+  maxWindows: { label: "ウィンドウ上限", cls: "rs-ok" },
   failed: { label: "接続失敗", cls: "rs-fail" },
   timeout: { label: "時間切れ", cls: "rs-fail" },
 };
@@ -236,7 +234,7 @@ function renderProgress(p: FetchProgress): void {
     .map((r) => {
       const view = RELAY_STATUS_VIEW[r.status];
       const meta =
-        r.events > 0 ? `${r.events} 件 / ${r.pages} ページ` : `${r.pages} ページ`;
+        r.events > 0 ? `${r.events} 件 / ${r.pages} ウィンドウ` : `${r.pages} ウィンドウ`;
       return `<li class="relay-item ${view.cls}">
         <span class="relay-host">${escapeHtml(shortRelay(r.url))}</span>
         <span class="relay-status">${escapeHtml(view.label)}</span>
@@ -251,7 +249,7 @@ function renderProgress(p: FetchProgress): void {
       <div class="pg-cell"><span class="pg-num">${p.collectedUnique}</span><span class="pg-lbl">取得イベント</span></div>
       <div class="pg-cell"><span class="pg-num">${p.relaysSucceeded}/${p.relaysTotal}</span><span class="pg-lbl">応答リレー</span></div>
       <div class="pg-cell"><span class="pg-num${p.relaysFailed > 0 ? " pg-warn" : ""}">${p.relaysFailed}</span><span class="pg-lbl">失敗リレー</span></div>
-      <div class="pg-cell"><span class="pg-num">${p.pagesFetched}</span><span class="pg-lbl">取得ページ</span></div>
+      <div class="pg-cell"><span class="pg-num">${p.pagesFetched}</span><span class="pg-lbl">取得ウィンドウ</span></div>
     </div>
     <p class="pg-oldest">ここまで遡れた最古: <b>${escapeHtml(oldest)}</b> ・ 経過 ${elapsed}s ・ 完了 ${p.relaysCompleted}/${p.relaysTotal} リレー</p>
     <ul class="relay-list">${relayRows}</ul>
@@ -273,7 +271,7 @@ function fmtDate(sec: number | null): string {
   return new Date(sec * 1000).toISOString().replace("T", " ").slice(0, 16) + "Z";
 }
 
-/** 取得（ページング）の到達度を 1 行で表す（履歴が不完全なら警告色）。 */
+/** 取得（タイムウィンドウ）の到達度を 1 行で表す（履歴が不完全なら警告色）。 */
 function historyLineHtml(r: ScoreResult): string {
   const h = r.history;
   if (!h) return "";
@@ -281,7 +279,7 @@ function historyLineHtml(r: ScoreResult): string {
     ? "リレーが返す限界まで到達"
     : `掘り切れず（${h.stopReason}）`;
   const cls = h.historyComplete ? "history-line" : "history-line history-warn";
-  return `<span class="${cls}">取得 ${h.pagesFetched} ページ / ${h.relaysQueried} リレー ・ 履歴 ${escapeHtml(
+  return `<span class="${cls}">取得 ${h.pagesFetched} ウィンドウ / ${h.relaysQueried} リレー ・ 履歴 ${escapeHtml(
     label,
   )}</span><br />`;
 }
