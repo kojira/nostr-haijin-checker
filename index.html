@@ -14,7 +14,7 @@
       <header class="hero">
         <h1>Nostr 廃人度チェッカー <span aria-hidden="true">💀</span></h1>
         <p class="lead">
-          <code>npub</code> を入力すると、複数リレーから公開投稿を取得して
+          <code>npub</code> を入力すると、
           <strong>総合廃人スコア</strong>を採点します。
         </p>
       </header>
@@ -40,7 +40,7 @@
               <textarea id="relays" name="relays" rows="5" spellcheck="false"></textarea>
             </label>
             <p class="hint">
-              対象 kind を時間ウィンドウで区切って取得します。深く掘るほど時間がかかります。
+              深く掘るほど時間がかかります。
             </p>
             <div class="field-row">
               <label class="field">
@@ -62,9 +62,6 @@
                 <input id="windowTimeout" name="windowTimeout" type="number" min="2000" max="120000" step="1000" value="30000" />
               </label>
             </div>
-            <p class="hint">
-              タイムアウトはリレー／リクエスト単位です。
-            </p>
             <div class="field-row">
               <label class="field">
                 <span class="field-label">リレー総取得タイムアウト (ms)</span>
@@ -76,7 +73,7 @@
               </label>
             </div>
             <p class="hint">
-              連続実稼働日数（ストリーク）は別経路で計測し、総合スコアには影響しません。
+              連続実稼働日数（ストリーク）は総合スコアには影響しません。
             </p>
             <div class="field-row">
               <label class="field field-check">
@@ -105,7 +102,7 @@
 
       <footer class="footer">
         <p>
-          娯楽・自己診断目的の MVP です。ソース・詳細は
+          娯楽・自己診断向けのツールです。ソース・詳細は
           <a href="https://github.com/" id="repo-link" rel="noopener">リポジトリ</a>
           を参照してください。
         </p>

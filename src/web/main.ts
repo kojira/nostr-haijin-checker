@@ -156,7 +156,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   const nonWss = relays.filter((r) => !r.startsWith("wss://"));
   if (nonWss.length > 0) {
     setError(
-      `wss:// のリレーのみ利用できます（HTTPS 配信のため）。除外: ${nonWss.join(", ")}`,
+      `wss:// のリレーのみ利用できます。除外: ${nonWss.join(", ")}`,
     );
     return;
   }
@@ -187,7 +187,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
 
   setBusy(
     true,
-    `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, dense-threshold ${denseThreshold}, max-windows ${maxWindows}）。`,
+    `リレーへ問い合わせ中...（${relays.length} relays）`,
   );
 
   try {
@@ -208,7 +208,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     let streak: StreakInfo | null = null;
     if (streakEnabled) {
-      setBusy(true, "連続実稼働日数（ストリーク）を軽量ルックアップ中… 全件取得とは別経路で日ごとに最新 1 件だけを遡ります。");
+      setBusy(true, "連続実稼働日数（ストリーク）を確認中…");
       try {
         streak = await lookupUserStreak(pubkeyHex, {
           relays,
@@ -343,7 +343,7 @@ function streakLineHtml(s: StreakInfo | null): string {
     )}${escapeHtml(more)}`;
   }
   const cls = s.ongoing ? "streak-line streak-on" : "streak-line";
-  return `<span class="${cls}">連続実稼働（別経路）: ${body} <span class="streak-note">※日ごとに1件以上の有無で判定（全件取得とは独立）</span></span><br />`;
+  return `<span class="${cls}">連続実稼働: ${body}</span><br />`;
 }
 
 function renderResult(r: ScoreResult): void {
@@ -389,7 +389,7 @@ function renderResult(r: ScoreResult): void {
       "長期継続・古参度",
       obs.longTermAssessable
         ? "観測ウィンドウが十分にあり、長期の継続として評価できます。"
-        : "観測ウィンドウが短いため評価を保留（low-confidence）。長期継続は主張しません。",
+        : "観測ウィンドウが短いため評価を保留しています。",
       r.subScores.longTermRetention,
       !obs.longTermAssessable,
     ),

@@ -1,7 +1,7 @@
 {
   "name": "nostr-haijin-checker",
   "version": "0.1.0",
-  "description": "Nostrの投稿パターンから「廃人度（Haijin score）」を説明可能なロジックで採点するCLIツール",
+  "description": "Nostrの投稿パターンから「廃人度（Haijin score）」を説明可能なロジックで採点するツール（CLI / Web）",
   "type": "module",
   "bin": {
     "nostr-haijin-checker": "dist/index.js"
