@@ -12,6 +12,7 @@ import type {
   AnalyzedEvent,
   ObservationInfo,
   SignalScore,
+  StreakInfo,
 } from "../types.js";
 
 const SECONDS_PER_DAY = 86400;
@@ -40,6 +41,13 @@ const LONGTERM = {
 
 /** 短期アクティブ度のサンプル信頼度が満点になるイベント数。 */
 const SHORTTERM_FULL_EVENTS = 30;
+
+/**
+ * 連続実稼働ストリークが「ほぼフル加点」に達する連続日数（飽和カーブの基準）。
+ * 早い段階で強く伸び、約 60 日でほぼ頭打ちになるよう選んでいる:
+ *   7日 → 約 51 / 14日 → 約 66 / 30日 → 約 84 / 60日 → 100。
+ */
+export const STREAK_FULL_DAYS = 60;
 
 /**
  * 飽和スコア: value が full に達するとほぼ 100、それ以上は緩やかに頭打ち。
@@ -380,6 +388,65 @@ export function longTermRetentionSignal(
       firstSeenAgeDays: obs.firstSeenAgeDays,
       observedWindowDays: obs.observedWindowDays,
       observedActiveDays: obs.observedActiveDays,
+    },
+  };
+}
+
+/**
+ * 6) 連続実稼働ストリーク（長期軸）: 連続して実稼働日（その日に 1 件以上投稿）が
+ *    続いた日数を、総合スコアに加点する独立シグナル。
+ *
+ * 入力 `streak.currentStreakDays` は heavy fetch とは別経路の軽量プローブ
+ * （streak.ts）で **日ごとに活動有無だけを直接確認**して数えた連続日数。これを
+ * 飽和カーブ `saturating(days, STREAK_FULL_DAYS)` で 0-100 に写す。早い段階で強く
+ * 伸び、約 60 日で頭打ちになる（短期の活発さを過度に支配しないよう重みは控えめ）。
+ *
+ * 信頼度割引はしない（観測ウィンドウの長短ではなく、ストリーク経路が連続日を
+ * **直接プローブで確認済み**だから）。総合スコアでは modest な固定重み（WEIGHTS.streak）
+ * で重み付き平均に参加する。
+ *
+ * truncated（上限/期限/プローブ失敗で打ち切り）のとき、`currentStreakDays` は
+ * 「実際の連続日数の下限」である。saturating は単調増加なので、この下限から得た
+ * スコアは過大主張ではなく **控えめな下限**として扱える（真の値はこれ以上）。
+ * したがって既知の長いストリークは高く出つつ、正確な天井は断定しない（reason に「≥」と明示）。
+ */
+export function streakRetentionSignal(
+  streak: StreakInfo,
+  weight: number,
+): SignalScore {
+  const days = Math.max(0, streak.currentStreakDays);
+  const score = saturating(days, STREAK_FULL_DAYS);
+
+  // truncated のときは下限であることを「≥」で明示し、正確な連続日数を主張しない。
+  const ge = streak.truncated ? "≥" : "";
+  const state =
+    streak.daysSinceLastActive == null
+      ? ""
+      : streak.ongoing
+        ? "継続中"
+        : `${streak.daysSinceLastActive}日前に途切れ`;
+  const trunc = streak.truncated
+    ? "（上限到達: 実際の連続日数はこれ以上＝下限として控えめに加点）"
+    : "";
+  const reason =
+    days === 0
+      ? "連続実稼働日数 0 日（直近に連続した実稼働がありません）。連続日数が伸びるほど総合スコアに加点されます。"
+      : `連続実稼働 ${ge}${days}日${state ? `（${state}）` : ""}。` +
+        `約 ${STREAK_FULL_DAYS} 日で頭打ちの飽和加点として総合スコアに反映します。${trunc}`;
+
+  return {
+    key: "streakRetention",
+    label: "連続実稼働",
+    category: "longTerm",
+    score: round1(score),
+    weight,
+    reason,
+    detail: {
+      currentStreakDays: days,
+      fullDays: STREAK_FULL_DAYS,
+      ongoing: streak.ongoing ? 1 : 0,
+      truncated: streak.truncated ? 1 : 0,
+      daysSinceLastActive: streak.daysSinceLastActive ?? -1,
     },
   };
 }

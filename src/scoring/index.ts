@@ -27,6 +27,7 @@ import {
   longTermRetentionSignal,
   observedWindow,
   shortTermActivitySignal,
+  streakRetentionSignal,
 } from "./signals.js";
 import { rankForScore } from "./rank.js";
 
@@ -41,6 +42,10 @@ export const DEFAULT_CONFIG: ScoringConfig = {
  *  - 短期(shortTerm) + パターン(temporalCoverage/bursts/engagement) で 0.80。
  *  - 長期(longTerm) のベース重みは 0.20 だが、総合では観測信頼度で割り引かれる
  *    （confidence が低い＝観測ウィンドウが短いと、長期軸は総合へほぼ寄与しない）。
+ *  - streak（連続実稼働ストリーク）は **任意**（別経路の軽量ルックアップがあるときだけ）の
+ *    長期系シグナル。控えめな固定重み 0.12 で、短期の活発さを支配しない範囲で総合に効く。
+ *    longTerm と違い観測信頼度では割り引かない（連続日を直接プローブで確認済みのため）。
+ *    ストリークが無い（null）ときは合算にも正規化にも一切現れない。
  */
 export const WEIGHTS = {
   shortTerm: 0.3,
@@ -48,6 +53,7 @@ export const WEIGHTS = {
   bursts: 0.15,
   engagement: 0.15,
   longTerm: 0.2,
+  streak: 0.12,
 } as const;
 
 /**
@@ -57,9 +63,10 @@ export const WEIGHTS = {
  *            履歴を掘り切れたかを注意書き（notes）に反映する。取得経路を介さない
  *            （直接イベント配列を渡す）場合は null。
  * @param streak ストリーク（連続実稼働日数）の軽量ルックアップ結果。heavy fetch とは
- *            **別経路**で日次の活動有無だけを掘った結果。総合スコアには影響させず、
- *            結果（result.streak）と注意書きにのみ反映する。ストリーク経路を介さない
- *            場合は null。
+ *            **別経路**で日次の活動有無だけを掘った結果。**渡された場合は**「連続実稼働」
+ *            シグナル（長期軸・重み 0.12）として総合スコアに加点し、長期軸サブスコアにも
+ *            反映する。連続日数が長いほどスコアが上がる（約 60 日で頭打ちの飽和加点）。
+ *            ストリーク経路を介さない（null）場合は合算・正規化・signals のいずれにも現れない。
  */
 export function scoreEvents(
   npub: string,
@@ -102,36 +109,51 @@ export function scoreEvents(
     WEIGHTS.longTerm * observation.confidence,
   );
 
+  // 連続実稼働ストリーク（任意・別経路）。渡されたときだけ長期系シグナルとして加点する。
+  const streakSignal = streak
+    ? streakRetentionSignal(streak, WEIGHTS.streak)
+    : null;
+
   const signals: SignalScore[] = [
     shortTerm,
     temporalCoverage,
     bursts,
     engagement,
     longTerm,
+    ...(streakSignal ? [streakSignal] : []),
   ];
 
   // 総合スコア: 短期＋パターンは満額、長期は信頼度で割り引いた重みで合算し、
   // 「観測できた分」だけで正規化する（confidence-aware contribution）。
   // → 短観測の高密度ユーザーを「長期不明」で不当に減点せず、かつ古参を僭称もしない。
+  // ストリークがあるときは固定重み（信頼度割引なし）の項を分子・分母の両方に足す。
+  // これにより 0-100 の正規化は保たれ、連続日数が長い（streakSignal.score が高い）ほど
+  // 分子だけが増えて総合スコアが上がる（分母はストリーク有無で一意に決まる）。
   const otherWeight =
     WEIGHTS.shortTerm +
     WEIGHTS.temporalCoverage +
     WEIGHTS.bursts +
     WEIGHTS.engagement;
   const effLongWeight = WEIGHTS.longTerm * observation.confidence;
+  const streakWeight = streakSignal ? WEIGHTS.streak : 0;
   const numerator =
     shortTerm.score * WEIGHTS.shortTerm +
     temporalCoverage.score * WEIGHTS.temporalCoverage +
     bursts.score * WEIGHTS.bursts +
     engagement.score * WEIGHTS.engagement +
-    longTerm.score * WEIGHTS.longTerm;
-  const denominator = otherWeight + effLongWeight;
+    longTerm.score * WEIGHTS.longTerm +
+    (streakSignal ? streakSignal.score * WEIGHTS.streak : 0);
+  const denominator = otherWeight + effLongWeight + streakWeight;
   const totalScore = Math.round(denominator > 0 ? numerator / denominator : 0);
 
   const subScores: SubScores = {
     shortTermActivity: shortTerm.score,
     usagePattern: weightedAverage([temporalCoverage, bursts, engagement]),
-    longTermRetention: longTerm.score,
+    // 長期軸サブスコアは「古参度シグナル」と（あれば）「連続実稼働シグナル」の重み付き平均。
+    // ストリークが無いときは従来どおり古参度シグナル単体。
+    longTermRetention: streakSignal
+      ? weightedAverage([longTerm, streakSignal])
+      : longTerm.score,
   };
 
   const { start, end } = observedWindow(events);
@@ -148,7 +170,8 @@ export function scoreEvents(
   }
   // 取得（ページング）の実情を正直に反映する。掘り切れたか／途中で打ち切ったか。
   for (const n of historyNotes(fetchMeta)) notes.push(n);
-  // ストリーク（連続実稼働日数）は heavy fetch とは別経路の独立指標。注意書きにのみ反映。
+  // ストリーク（連続実稼働日数）は heavy fetch とは別経路だが、加点済み（上の streakSignal）。
+  // ここでは効き方・限界（truncated 等）を注意書きに反映する。
   for (const n of streakNotes(streak)) notes.push(n);
 
   return {
@@ -233,9 +256,10 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
 /**
  * ストリーク（連続実稼働日数）の軽量ルックアップ結果から注意書きを作る。
  *
- * ストリークは heavy fetch（全件取得）とは **別経路**で、日ごとに「その日に投稿が
- * 1 件でもあるか」だけを軽量プローブで遡って数えた独立指標である。全履歴の網羅取得
- * ではないこと・総合スコアには影響しないことを、利用者が誤解しないよう明示する。
+ * ストリークは heavy fetch（全件取得）とは **別経路（軽量プローブ）**で、日ごとに
+ * 「その日に投稿が 1 件でもあるか」だけを遡って数えた連続日数である。**取得経路は
+ * 独立**だが、得られた連続日数は「連続実稼働」シグナル（長期軸・重み 12%）として
+ * 総合スコアに加点される。全履歴の網羅取得ではないこと・加点の効き方を明示する。
  */
 export function streakNotes(streak: StreakInfo | null): string[] {
   if (!streak) return [];
@@ -244,7 +268,8 @@ export function streakNotes(streak: StreakInfo | null): string[] {
   if (streak.currentStreakDays === 0) {
     out.push(
       "連続実稼働日数（ストリーク）は 0 日です（最新の実稼働日が見つからない、または直近に活動がありません）。" +
-        "ストリークは全件取得とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを軽量に確認して数えます（全履歴の網羅取得ではありません）。",
+        "ストリークは全件取得とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを軽量に確認して数えます（全履歴の網羅取得ではありません）。" +
+        "連続日数が 0 のため、連続実稼働シグナルからの加点はありません。",
     );
     return out;
   }
@@ -255,13 +280,14 @@ export function streakNotes(streak: StreakInfo | null): string[] {
     : `${streak.daysSinceLastActive ?? "?"} 日前に途切れています`;
   out.push(
     `連続実稼働日数（ストリーク）: ${streak.currentStreakDays} 日（最新の実稼働日 ${last} / ${status}）。` +
-      "これは全件取得（総合スコアの入力）とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを" +
-      "軽量プローブで遡って数えたものです（全履歴の網羅取得ではなく、総合スコアには影響しません）。",
+      "これは全件取得（密度・連投・交流などの入力）とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを" +
+      "軽量プローブで遡って数えたものです（全履歴の網羅取得ではありません）。" +
+      "この連続日数は「連続実稼働」シグナル（長期軸・重み 12%・約 60 日で頭打ちの飽和加点）として総合スコアに反映され、連続日数が長いほどスコアが上がります。",
   );
   if (streak.truncated) {
     out.push(
       `ストリークは安全上限（走査日数 / 時間）またはプローブ失敗で打ち切られました（${streak.daysScanned} 日走査）。` +
-        "実際の連続日数はさらに長い可能性があります。--streak-max-days を増やすと、より過去まで数えられることがあります。",
+        "実際の連続日数はさらに長い可能性があります（表示値・加点はいずれも下限として控えめに扱います）。--streak-max-days を増やすと、より過去まで数えられることがあります。",
     );
   }
   return out;

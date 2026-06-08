@@ -202,7 +202,8 @@ export interface Rank {
  * heavy fetch（HistoryMeta＝全件取得）とは **別経路**で、日単位に「その日に投稿が
  * 1 件でもあるか」だけを安く・深く確認して数えた結果を表す。全件取得には依存せず、
  * heavy fetch が遡れる範囲より遠くまで（cheap に）遡れることがある。
- * 総合スコア（totalScore）には一切影響しない、表示用の独立指標。
+ * **取得経路は独立だが**、得られた連続日数は「連続実稼働」シグナル（長期軸・重み 0.12）
+ * として総合スコア（totalScore）に加点される（連続日数が長いほどスコアが上がる）。
  */
 export interface StreakInfo {
   /** 連続実稼働日数（最新の実稼働日から、途切れずに遡れた日数）。 */
@@ -230,7 +231,11 @@ export interface StreakInfo {
 export interface ScoreResult {
   npub: string;
   pubkeyHex: string;
-  /** 0-100 の総合廃人スコア（短期・パターン・長期の信頼度加重合算）。 */
+  /**
+   * 0-100 の総合廃人スコア（短期・パターン・長期の信頼度加重合算）。
+   * ストリーク（連続実稼働）の軽量ルックアップが渡された場合は、その連続日数を
+   * 「連続実稼働」シグナル（長期軸・重み 0.12）として加点した値になる。
+   */
   totalScore: number;
   rank: Rank;
   /** 3 軸に分離した表示用サブスコア。 */
@@ -252,7 +257,8 @@ export interface ScoreResult {
   history: HistoryMeta | null;
   /**
    * ストリーク（連続実稼働日数）の軽量ルックアップ結果。heavy fetch とは別経路で
-   * 日次の活動有無だけを掘る。ストリーク経路を介さない場合は null。
+   * 日次の活動有無だけを掘る。渡された場合は「連続実稼働」シグナルとして totalScore に
+   * 加点され、signals にも現れる。ストリーク経路を介さない場合は null。
    */
   streak: StreakInfo | null;
   /** 観測の限界に関する注意書き。 */

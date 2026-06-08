@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { scoreEvents, DEFAULT_CONFIG } from "../src/scoring/index.js";
-import type { NostrEvent } from "../src/types.js";
+import type { NostrEvent, StreakInfo } from "../src/types.js";
 
 const NPUB = "npub1synthetic000000000000000000000000000000000000000000000000";
 const HEX = "00".repeat(32);
@@ -166,6 +166,128 @@ test("長期にわたり活動: 長期継続が高く・評価可能になる", 
     `長期が低すぎ: ${r.subScores.longTermRetention}`,
   );
   assert.ok(r.observation.observedWindowDays >= 45);
+});
+
+/** 連続実稼働ストリーク（StreakInfo）を組み立てるテストヘルパ。 */
+function mkStreak(days: number, opts: Partial<StreakInfo> = {}): StreakInfo {
+  return {
+    currentStreakDays: days,
+    lastActiveDay: days > 0 ? "2024-01-01" : null,
+    daysSinceLastActive: days > 0 ? 0 : null,
+    ongoing: days > 0,
+    daysScanned: days,
+    truncated: false,
+    relaysQueried: 1,
+    elapsedMs: 1,
+    ...opts,
+  };
+}
+
+/** ストリーク加点の検証に使う「中程度のプロファイル」（総合が満点でも 0 でもない）。 */
+function moderateProfile(): { events: NostrEvent[]; now: number } {
+  const events: NostrEvent[] = [];
+  for (let d = 0; d < 14; d++)
+    for (let n = 0; n < 5; n++) events.push(ev(jst(d, 10 + n)));
+  return { events, now: jst(14, 12) };
+}
+
+test("ストリーク: 連続実稼働シグナルが signals に現れ、総合に加点される", () => {
+  const { events, now } = moderateProfile();
+  const base = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now);
+  const withStreak = scoreEvents(
+    NPUB,
+    HEX,
+    events,
+    DEFAULT_CONFIG,
+    now,
+    null,
+    mkStreak(30),
+  );
+
+  // ストリーク無しでは 5 シグナルのまま（後方互換）。
+  assert.equal(base.signals.length, 5);
+  // ストリーク有りでは 6 シグナル目（連続実稼働・長期軸）が現れる。
+  assert.equal(withStreak.signals.length, 6);
+  const sig = withStreak.signals.find((s) => s.key === "streakRetention");
+  assert.ok(sig, "連続実稼働シグナルが signals に無い");
+  assert.equal(sig!.category, "longTerm");
+  assert.ok(sig!.reason.length > 0);
+  assert.equal(sig!.detail.currentStreakDays, 30);
+
+  // この中程度プロファイルでは 30 日ストリークが総合を押し上げる。
+  assert.ok(
+    withStreak.totalScore > base.totalScore,
+    `加点されていない: base=${base.totalScore} withStreak=${withStreak.totalScore}`,
+  );
+});
+
+test("ストリーク: 連続日数が長いほど総合スコアが高い（単調）", () => {
+  const { events, now } = moderateProfile();
+  const run = (days: number): number =>
+    scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now, null, mkStreak(days))
+      .totalScore;
+
+  const s0 = run(0);
+  const s7 = run(7);
+  const s30 = run(30);
+  const s100 = run(100);
+
+  assert.ok(s7 > s0, `7日 ≤ 0日: ${s7} vs ${s0}`);
+  assert.ok(s30 > s7, `30日 ≤ 7日: ${s30} vs ${s7}`);
+  assert.ok(s100 > s30, `100日 ≤ 30日: ${s100} vs ${s30}`);
+});
+
+test("ストリーク: 0 日は連続実稼働シグナルでは加点 0（しかし合算には参加）", () => {
+  const { events, now } = moderateProfile();
+  const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now, null, mkStreak(0));
+  const sig = r.signals.find((s) => s.key === "streakRetention")!;
+  assert.equal(sig.score, 0);
+  // 連続日数 0 の旨と「加点なし」の注意書きが出る。
+  assert.ok(r.notes.some((n) => n.includes("加点はありません")));
+});
+
+test("ストリーク: truncated は下限として高く加点しつつ正確な天井を断定しない", () => {
+  const { events, now } = moderateProfile();
+  const r = scoreEvents(
+    NPUB,
+    HEX,
+    events,
+    DEFAULT_CONFIG,
+    now,
+    null,
+    mkStreak(1000, { truncated: true, daysScanned: 1000 }),
+  );
+  const sig = r.signals.find((s) => s.key === "streakRetention")!;
+  // 既知の長いストリークは高く出る（飽和で頭打ち）。
+  assert.ok(sig.score >= 95, `truncated 長ストリークが低い: ${sig.score}`);
+  // 正確な天井を断定せず「≥」で下限であることを明示する。
+  assert.match(sig.reason, /≥/);
+  assert.equal(sig.detail.truncated, 1);
+  // 注意書きでも下限として控えめに扱う旨を出す。
+  assert.ok(r.notes.some((n) => n.includes("下限")));
+});
+
+test("ストリーク: 長期軸サブスコアにも反映される", () => {
+  // 観測信頼度が低い（短い観測）プロファイルでは古参度サブスコアはほぼ 0。
+  const events: NostrEvent[] = [];
+  for (let d = 0; d < 14; d++) events.push(ev(jst(d, 12)));
+  const now = jst(14, 12);
+
+  const without = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, now);
+  const withStreak = scoreEvents(
+    NPUB,
+    HEX,
+    events,
+    DEFAULT_CONFIG,
+    now,
+    null,
+    mkStreak(30),
+  );
+  assert.ok(
+    withStreak.subScores.longTermRetention >
+      without.subScores.longTermRetention,
+    `長期軸に反映されていない: without=${without.subScores.longTermRetention} with=${withStreak.subScores.longTermRetention}`,
+  );
 });
 
 test("短観測の高密度 < 長期活動 で長期継続スコアが逆転する", () => {

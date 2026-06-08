@@ -203,8 +203,9 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     });
 
     // ── ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ ──
-    // 日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。総合スコアには
-    // 影響させず、表示用の独立指標として持ち帰る。失敗しても採点本体は止めない。
+    // 日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。取得経路は独立だが、
+    // 得られた連続日数は scoreEvents 内で「連続実稼働」シグナル（長期軸・重み 12%）として
+    // 総合スコアに加点される。失敗しても採点本体は止めない（streak=null のまま）。
     const nowSec = Math.floor(Date.now() / 1000);
     let streak: StreakInfo | null = null;
     if (streakEnabled) {
@@ -217,7 +218,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
           nowUnix: nowSec,
         });
       } catch (err) {
-        // ストリークは独立指標。失敗しても採点は継続（streak=null のまま）。
+        // ストリークは別経路の任意シグナル。失敗しても採点は継続（streak=null＝加点なしのまま）。
         console.warn("streak lookup failed:", err);
       }
     }
@@ -325,8 +326,9 @@ function historyLineHtml(r: ScoreResult): string {
 }
 
 /**
- * ストリーク（連続実稼働日数）を 1 行で表す。全件取得とは別経路の独立指標であることを
- * 利用者が誤解しないよう、「日ごとの有無で判定」である旨を併記する。
+ * ストリーク（連続実稼働日数）を 1 行で表す。取得は全件取得とは別経路（日ごとの有無で
+ * 判定）であること、および連続日数が「連続実稼働」シグナルとして総合スコアに加点される
+ * ことを併記し、利用者が効き方を誤解しないようにする。
  */
 function streakLineHtml(s: StreakInfo | null): string {
   if (!s) return "";
@@ -337,10 +339,10 @@ function streakLineHtml(s: StreakInfo | null): string {
     const state = s.ongoing
       ? "継続中"
       : `途切れ（${s.daysSinceLastActive ?? "?"}日前）`;
-    const more = s.truncated ? " ・ 上限到達（さらに長い可能性）" : "";
+    const more = s.truncated ? " ・ 上限到達（さらに長い可能性／下限として加点）" : "";
     body = `<b>${s.currentStreakDays}</b> 日（${escapeHtml(state)}）・ 最新実稼働 ${escapeHtml(
       s.lastActiveDay ?? "-",
-    )}${escapeHtml(more)}`;
+    )}${escapeHtml(more)} ・ 総合に加点（長期軸・重み12%）`;
   }
   const cls = s.ongoing ? "streak-line streak-on" : "streak-line";
   return `<span class="${cls}">連続実稼働: ${body}</span><br />`;
