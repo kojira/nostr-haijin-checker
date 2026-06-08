@@ -20,12 +20,12 @@ import type {
 import { isAllowedKind } from "../kinds.js";
 import { prepareEvents } from "./prepare.js";
 import {
+  aggregateEvents,
   burstSignal,
   computeObservation,
   engagementSignal,
   temporalCoverageSignal,
   longTermRetentionSignal,
-  observedWindow,
   shortTermActivitySignal,
   streakRetentionSignal,
 } from "./signals.js";
@@ -94,15 +94,19 @@ export function scoreEvents(
   }
 
   const events = prepareEvents(rawEvents, config);
-  const observation = computeObservation(events, now);
+  // 全シグナルが共有する集計値を **1 パス** で算出する（巨大スプレッド・多重走査を回避）。
+  // 195k 件規模でも min/max・稼働日・時刻ヒストグラム・交流件数をここで一度だけ数える。
+  const agg = aggregateEvents(events);
+  const observation = computeObservation(agg, now);
 
-  const shortTerm = shortTermActivitySignal(events, WEIGHTS.shortTerm);
+  const shortTerm = shortTermActivitySignal(agg, WEIGHTS.shortTerm);
   const temporalCoverage = temporalCoverageSignal(
-    events,
+    agg,
     WEIGHTS.temporalCoverage,
   );
+  // 連投は時系列の並びが必要なため、唯一イベント配列そのものを使う（集計値では代替不可）。
   const bursts = burstSignal(events, WEIGHTS.bursts);
-  const engagement = engagementSignal(events, WEIGHTS.engagement);
+  const engagement = engagementSignal(agg, WEIGHTS.engagement);
   // 長期軸の表示重みは「ベース重み × 信頼度」（短観測ではほぼ 0）。
   const longTerm = longTermRetentionSignal(
     observation,
@@ -156,7 +160,8 @@ export function scoreEvents(
       : longTerm.score,
   };
 
-  const { start, end } = observedWindow(events);
+  const start = agg.minCreatedAt;
+  const end = agg.maxCreatedAt;
 
   if (rawEvents.length < 30) {
     notes.push(

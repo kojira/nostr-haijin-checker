@@ -76,17 +76,71 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** 観測ウィンドウ（秒）と日数を求める。 */
-export function observedWindow(events: AnalyzedEvent[]): {
-  start: number;
-  end: number;
-  days: number;
-} {
-  const times = events.map((e) => e.createdAt);
-  const start = Math.min(...times);
-  const end = Math.max(...times);
-  const days = Math.max(1, (end - start) / SECONDS_PER_DAY);
-  return { start, end, days };
+/**
+ * 全シグナルが共有する集計値。イベント配列を **1 回だけ** 走査して作る。
+ *
+ * 195k 件規模（“廃人スケール”）でも安全に処理できるよう、以下を増分集計する:
+ *  - min/max createdAt（最古/最新。`Math.min(...arr)` のような巨大スプレッドは
+ *    引数上限でスタックオーバーフローを起こすため使わない）
+ *  - 実稼働日数（distinct な dayKey の数）
+ *  - 時刻ヒストグラム（0-23 時の件数）
+ *  - 交流件数（リプライ/リアクション/リポスト）
+ *
+ * 各シグナルはこの集計値を消費するだけなので、配列の多重走査（map/filter/Set の
+ * 繰り返し）や巨大スプレッドが発生しない。
+ */
+export interface EventAggregate {
+  /** イベント総数。 */
+  total: number;
+  /** 最古の createdAt（UNIX 秒）。空のときは 0。 */
+  minCreatedAt: number;
+  /** 最新の createdAt（UNIX 秒）。空のときは 0。 */
+  maxCreatedAt: number;
+  /** 投稿があった実日数（distinct な dayKey の数）。 */
+  activeDays: number;
+  /** 0-23 時の投稿件数ヒストグラム（長さ 24）。 */
+  hourCounts: number[];
+  /** リプライ件数（kind1 + 'e' タグ）。 */
+  replies: number;
+  /** リアクション件数（kind7）。 */
+  reactions: number;
+  /** リポスト件数（kind6）。 */
+  reposts: number;
+}
+
+/**
+ * イベント配列を 1 パスで集計する。O(n) / 追加メモリは O(distinct days) のみ。
+ * 巨大配列でもスタックや一時配列を爆発させない（giant spread / 多重 map・filter を避ける）。
+ */
+export function aggregateEvents(events: AnalyzedEvent[]): EventAggregate {
+  const hourCounts = new Array<number>(24).fill(0);
+  const dayKeys = new Set<string>();
+  let minCreatedAt = Infinity;
+  let maxCreatedAt = -Infinity;
+  let replies = 0;
+  let reactions = 0;
+  let reposts = 0;
+
+  for (const e of events) {
+    if (e.createdAt < minCreatedAt) minCreatedAt = e.createdAt;
+    if (e.createdAt > maxCreatedAt) maxCreatedAt = e.createdAt;
+    dayKeys.add(e.dayKey);
+    hourCounts[e.hourLocal]++;
+    if (e.isReply) replies++;
+    if (e.isReaction) reactions++;
+    if (e.isRepost) reposts++;
+  }
+
+  return {
+    total: events.length,
+    minCreatedAt: events.length ? minCreatedAt : 0,
+    maxCreatedAt: events.length ? maxCreatedAt : 0,
+    activeDays: dayKeys.size,
+    hourCounts,
+    replies,
+    reactions,
+    reposts,
+  };
 }
 
 /**
@@ -98,15 +152,16 @@ export function observedWindow(events: AnalyzedEvent[]): {
  * これを長期継続と取り違えないため、長期は別軸（longTermRetentionSignal）に分離する。
  */
 export function shortTermActivitySignal(
-  events: AnalyzedEvent[],
+  agg: EventAggregate,
   weight: number,
 ): SignalScore {
-  const { start, end } = observedWindow(events);
+  const start = agg.minCreatedAt;
+  const end = agg.maxCreatedAt;
   const windowDaysFrac = Math.max(1, (end - start) / SECONDS_PER_DAY);
   const spanDaysCal = Math.max(1, Math.round((end - start) / SECONDS_PER_DAY) + 1);
-  const activeDays = new Set(events.map((e) => e.dayKey)).size;
+  const activeDays = agg.activeDays;
 
-  const perDay = events.length / windowDaysFrac;
+  const perDay = agg.total / windowDaysFrac;
   // 25件/日 で「フル廃人」とみなす飽和カーブ。
   const densityScore = saturating(perDay, 25);
   const activeRatio = clamp01(activeDays / spanDaysCal);
@@ -117,7 +172,7 @@ export function shortTermActivitySignal(
 
   // サンプルが少ないと観測の確からしさが下がるので割り引く。
   const sampleConfidence = clamp01(
-    Math.log10(1 + events.length) / Math.log10(1 + SHORTTERM_FULL_EVENTS),
+    Math.log10(1 + agg.total) / Math.log10(1 + SHORTTERM_FULL_EVENTS),
   );
   const score = raw * sampleConfidence;
 
@@ -128,7 +183,7 @@ export function shortTermActivitySignal(
     score: round1(score),
     weight,
     reason: `観測ウィンドウ ${round1(windowDaysFrac)}日・稼働 ${activeDays}日で ${
-      events.length
+      agg.total
     }件（約 ${round1(perDay)}件/日, 稼働日率 ${Math.round(
       activeRatio * 100,
     )}%, サンプル信頼度 ${Math.round(
@@ -136,7 +191,7 @@ export function shortTermActivitySignal(
     )}%）。直近の活発さを表します。`,
     detail: {
       perDay: round1(perDay),
-      totalEvents: events.length,
+      totalEvents: agg.total,
       activeDays,
       spanDays: spanDaysCal,
       activeRatioPct: Math.round(activeRatio * 100),
@@ -162,12 +217,11 @@ export function shortTermActivitySignal(
  *  - evenness : 時刻ヒストグラムの正規化シャノンエントロピー（分布の均一さ）。
  */
 export function temporalCoverageSignal(
-  events: AnalyzedEvent[],
+  agg: EventAggregate,
   weight: number,
 ): SignalScore {
-  const total = events.length;
-  const counts = new Array<number>(24).fill(0);
-  for (const e of events) counts[e.hourLocal]++;
+  const total = agg.total;
+  const counts = agg.hourCounts;
 
   const distinctHours = counts.filter((c) => c > 0).length;
   const coverage = distinctHours / 24;
@@ -261,14 +315,12 @@ export function burstSignal(
 
 /** 4) 交流密度: リプライ・リアクション・リポストの割合。 */
 export function engagementSignal(
-  events: AnalyzedEvent[],
+  agg: EventAggregate,
   weight: number,
 ): SignalScore {
-  const replies = events.filter((e) => e.isReply).length;
-  const reactions = events.filter((e) => e.isReaction).length;
-  const reposts = events.filter((e) => e.isRepost).length;
+  const { replies, reactions, reposts } = agg;
   const interactions = replies + reactions + reposts;
-  const ratio = events.length ? interactions / events.length : 0;
+  const ratio = agg.total ? interactions / agg.total : 0;
   // 投稿の 60% が他者への反応なら 100 点。
   const score = clamp((ratio / 0.6) * 100);
   return {
@@ -294,10 +346,10 @@ export function engagementSignal(
  * @param nowSec 現在時刻(UNIX秒)。古参度（初観測からの経過）の基準。
  */
 export function computeObservation(
-  events: AnalyzedEvent[],
+  agg: EventAggregate,
   nowSec: number,
 ): ObservationInfo {
-  if (events.length === 0) {
+  if (agg.total === 0) {
     return {
       observedWindowDays: 0,
       firstSeenAgeDays: 0,
@@ -307,14 +359,15 @@ export function computeObservation(
     };
   }
 
-  const { start, end } = observedWindow(events);
+  const start = agg.minCreatedAt;
+  const end = agg.maxCreatedAt;
   const observedWindowDays = Math.max(0, (end - start) / SECONDS_PER_DAY);
   // 初観測からの経過。最低でも観測ウィンドウ長は確保（now がズレても破綻しない）。
   const firstSeenAgeDays = Math.max(
     observedWindowDays,
     (nowSec - start) / SECONDS_PER_DAY,
   );
-  const observedActiveDays = new Set(events.map((e) => e.dayKey)).size;
+  const observedActiveDays = agg.activeDays;
 
   const windowConf = clamp01(observedWindowDays / LONGTERM.fullWindowDays);
   const activityConf = clamp01(observedActiveDays / LONGTERM.fullActiveDays);
