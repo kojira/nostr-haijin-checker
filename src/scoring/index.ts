@@ -67,7 +67,7 @@ export function scoreEvents(
 
   if (rawEvents.length === 0) {
     notes.push(
-      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-windows / --timeout を増やす・--since を緩めてみてください。",
+      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-windows / --relay-timeout / --window-timeout を増やす・--since を緩めてみてください。",
     );
     for (const n of historyNotes(fetchMeta)) notes.push(n);
     return emptyResult(npub, pubkeyHex, config, notes, fetchMeta);
@@ -202,7 +202,7 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
     out.push(
       `履歴を掘り切れていません（理由: ${truncatedReasons.join(
         " / ",
-      )}）。観測できた最古 ${oldest} より前にも投稿がある可能性が高く、長期継続・古参度は過小評価され得ます。--max-windows / --max-events / --timeout を増やすか --since を緩めると、より過去まで遡れることがあります。`,
+      )}）。観測できた最古 ${oldest} より前にも投稿がある可能性が高く、長期継続・古参度は過小評価され得ます。--max-windows / --max-events / --relay-timeout / --window-timeout を増やすか --since を緩めると、より過去まで遡れることがあります。`,
     );
   }
 

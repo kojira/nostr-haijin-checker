@@ -59,7 +59,25 @@ program
     "この時刻(UNIX秒)より古いイベントは取りに行かない（下限。既定 2021-01-01）",
   )
   .option("-t, --tz <hours>", "時間分布の判定に使う UTC オフセット（時間）", "9")
-  .option("--timeout <ms>", "取得全体のタイムアウト（ミリ秒）", "12000")
+  .option(
+    "--window-timeout <ms>",
+    "1 リクエスト（1 リレー × 1 ウィンドウ）のタイムアウト（ミリ秒）。超えたウィンドウだけ中断し他リレーに影響しない",
+    "30000",
+  )
+  .option(
+    "--relay-timeout <ms>",
+    "1 リレーの総取得時間の上限（ミリ秒）。超えたリレーだけ打ち切り、他リレーは継続する",
+    "120000",
+  )
+  .option(
+    "--overall-timeout <ms>",
+    "任意の全体安全上限（ミリ秒・0 で無効）。主たる打ち切りではなく暴走防止の保険",
+    "0",
+  )
+  .option(
+    "--timeout <ms>",
+    "[非推奨] 旧グローバルタイムアウト。--overall-timeout（安全上限）の別名として解釈される",
+  )
   .option("--json", "JSON で出力（プログラム連携用）", false)
   .addHelpText(
     "after",
@@ -70,7 +88,15 @@ program
   密なウィンドウ（>= --dense-threshold 件）は中点で再帰分割して掘り直すため、
   1 日に多数投稿しても件数境界で取りこぼしにくくなります。
   --since（既定 2021-01-01）まで全ウィンドウを覆うか、--max-windows / --max-events /
-  --timeout の上限まで遡ります。掘り切れたか否かは結果に明示されます。
+  リレー単位のタイムアウト上限まで遡ります。掘り切れたか否かは結果に明示されます。
+
+タイムアウト設計（グローバルではなくリクエスト／リレー単位）:
+  取得は各リレーを独立に処理します。タイムアウトは責務ごとに分割され、
+  あるリレー／ウィンドウのタイムアウトが**他リレーを止めることはありません**。
+  - --window-timeout（既定 30000ms）… 1 リクエスト（1 リレー × 1 ウィンドウ）の上限。
+  - --relay-timeout （既定 120000ms）… 1 リレーの総取得時間の上限。超えてもそのリレーだけ打ち切り。
+  - --overall-timeout（既定 0=無効）… 任意の全体安全上限。暴走防止の二次的な保険にすぎません。
+  失敗・タイムアウトしたリレーは history.relayStats / notes に正直に残ります。
 
 例:
   $ nostr-haijin-checker npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m
@@ -91,7 +117,10 @@ const opts = program.opts<{
   maxEvents: string;
   since?: string;
   tz: string;
-  timeout: string;
+  windowTimeout: string;
+  relayTimeout: string;
+  overallTimeout: string;
+  timeout?: string;
   json: boolean;
 }>();
 
@@ -157,7 +186,10 @@ async function main(): Promise<void> {
     maxWindows: Number(opts.maxWindows),
     maxEvents: Number(opts.maxEvents),
     sinceUnix,
-    timeoutMs: Number(opts.timeout),
+    windowTimeoutMs: Number(opts.windowTimeout),
+    relayTimeoutMs: Number(opts.relayTimeout),
+    // --overall-timeout を優先。後方互換で旧 --timeout があれば安全上限として読む。
+    overallTimeoutMs: Number(opts.overallTimeout) || (opts.timeout ? Number(opts.timeout) : 0),
     onProgress: opts.json ? undefined : renderCliProgress,
   });
 

@@ -11,6 +11,10 @@
  *  3) グローバル重複排除: 同一 id が複数リレー/ウィンドウから来ても 1 件。
  *  4) 部分失敗: 片方のリレーが例外 → そのリレーは failed/timeout、もう片方の結果は返る。
  *  5) キャップ: maxEvents で早期停止 / maxWindows を尊重。
+ *  6) タイムアウトの分離（グローバルではなくリクエスト／リレー単位）:
+ *     - 片方のリレーがハング（ウィンドウタイムアウト）しても、他リレーは完走する。
+ *     - ウィンドウタイムアウトはグローバル停止ではない（各ウィンドウ独立に計時）。
+ *     - リレー総時間タイムアウトは、そのリレーだけを打ち切る。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -25,6 +29,11 @@ const HEX = "00".repeat(32);
 
 function ev(id: string, createdAt: number, kind = 1): NostrEvent {
   return { id, pubkey: HEX, created_at: createdAt, kind, tags: [], content: "x" };
+}
+
+/** 指定 ms 後に解決する小さな遅延（タイムアウト系テスト用）。 */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** [since, until) に入るイベントだけを返す素直な疑似フェッチャ。 */
@@ -224,5 +233,119 @@ test("キャップ: maxWindows を尊重する", async () => {
   assert.equal(meta.pagesFetched, 3);
   assert.equal(meta.hitPageCap, true);
   assert.equal(meta.stopReason, "maxWindows");
+  assert.equal(meta.historyComplete, false);
+});
+
+test("リレー単位タイムアウト: 片方がハングしても他リレーは完走する", async () => {
+  // 「ハング」リレーは abort されるまで返さない（ウィンドウタイムアウトで打ち切られる）。
+  // signal を尊重してタイマを片付け、ダングリングタイマでプロセスを生かし続けないようにする。
+  const until = DEFAULT_SINCE + 2592000; // 1 ウィンドウ
+  const goodEvents = [ev("g1", DEFAULT_SINCE + 1000), ev("g2", DEFAULT_SINCE + 2000)];
+  const combined: MinimalFetcher = {
+    async fetchAllEvents(relays, _filter, tr, o) {
+      if (relays[0] === "wss://hang") {
+        return new Promise<NostrEvent[]>((resolve, reject) => {
+          const t = setTimeout(() => resolve([]), 10_000);
+          o?.signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(t);
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
+      }
+      const s = tr.since ?? -Infinity;
+      const u = tr.until ?? Infinity;
+      return goodEvents.filter((e) => e.created_at >= s && e.created_at < u);
+    },
+    shutdown() {},
+  };
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://hang", "wss://good"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    windowTimeoutMs: 80, // ハングするリレーのウィンドウはここで時間切れ
+    relayTimeoutMs: 60_000,
+    fetcher: combined,
+  });
+  // 健全なリレーのイベントは全部返る（ハングに巻き込まれない）。
+  assert.equal(out.length, 2);
+  const hang = meta.relayStats.find((r) => r.url === "wss://hang")!;
+  const good = meta.relayStats.find((r) => r.url === "wss://good")!;
+  assert.equal(hang.status, "timeout");
+  assert.equal(good.status, "ok");
+  assert.equal(meta.timedOut, true);
+  // 健全リレーが範囲を覆い切ったので全体は ok。タイムアウトの事実は relayStats に正直に残る。
+  assert.equal(meta.stopReason, "ok");
+  assert.equal(meta.historyComplete, true);
+});
+
+test("ウィンドウタイムアウトはグローバル停止ではない: 各ウィンドウ独立に計時する", async () => {
+  // 健全リレーは 3 ウィンドウ、各 30ms（windowTimeout 60ms 未満）。合計 90ms は
+  // windowTimeout を超えるが、ウィンドウごとに計時がリセットされるので途中で止まらない。
+  // 旧来の単一グローバル期限（60ms）なら 90ms 到達前に打ち切られ、一部が欠落していた。
+  const until = DEFAULT_SINCE + 2592000 * 3; // 3 初期ウィンドウ
+  const all = [
+    ev("w0", DEFAULT_SINCE + 100),
+    ev("w1", DEFAULT_SINCE + 2592000 + 100),
+    ev("w2", DEFAULT_SINCE + 2592000 * 2 + 100),
+  ];
+  const slowButOk: MinimalFetcher = {
+    async fetchAllEvents(_relays, _filter, tr) {
+      await delay(30); // 各ウィンドウ 30ms（windowTimeout 未満）
+      const s = tr.since!;
+      const u = tr.until!;
+      return all.filter((e) => e.created_at >= s && e.created_at < u);
+    },
+    shutdown() {},
+  };
+  const { events: out, meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    windowTimeoutMs: 60, // 各ウィンドウには十分。グローバルなら合計 90ms で打ち切られるはず。
+    relayTimeoutMs: 60_000, // リレー総時間は余裕。
+    fetcher: slowButOk,
+  });
+  // 3 ウィンドウすべて処理され、全イベントが返る（グローバル停止なら一部欠落していた）。
+  assert.equal(out.length, 3, `件数: ${out.length}`);
+  assert.equal(meta.pagesFetched, 3);
+  assert.equal(meta.stopReason, "ok");
+  assert.equal(meta.historyComplete, true);
+  assert.equal(meta.timedOut, false);
+});
+
+test("リレー総時間タイムアウト: 速いウィンドウでもリレー上限で打ち切る", async () => {
+  // 各ウィンドウは速い（10ms）が数が多く、relayTimeout を超える。
+  // ウィンドウ個別には時間切れにならないが、リレー総時間の上限で timeout になる。
+  const until = DEFAULT_SINCE + 2592000 * 20; // 20 初期ウィンドウ
+  const all: NostrEvent[] = [];
+  for (let i = 0; i < 20; i++) {
+    all.push(ev(`r${i}`, DEFAULT_SINCE + i * 2592000 + 50));
+  }
+  const slow: MinimalFetcher = {
+    async fetchAllEvents(_relays, _filter, tr) {
+      await delay(10);
+      return all.filter((e) => e.created_at >= tr.since! && e.created_at < tr.until!);
+    },
+    shutdown() {},
+  };
+  const { meta } = await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: until,
+    sinceUnix: DEFAULT_SINCE,
+    windowTimeoutMs: 1000, // ウィンドウ個別には十分。
+    relayTimeoutMs: 50, // リレー総時間は短い → 数ウィンドウで打ち切る。
+    fetcher: slow,
+  });
+  const r1 = meta.relayStats.find((r) => r.url === "wss://r1")!;
+  assert.equal(r1.status, "timeout");
+  assert.equal(meta.timedOut, true);
+  // 全 20 ウィンドウは処理できず途中で打ち切られている。
+  assert.ok(meta.pagesFetched < 20, `pages: ${meta.pagesFetched}`);
+  // 健全に覆い切れていないので ok ではない。
+  assert.equal(meta.stopReason, "timeout");
   assert.equal(meta.historyComplete, false);
 });

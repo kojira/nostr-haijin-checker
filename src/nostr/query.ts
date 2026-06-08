@@ -117,7 +117,29 @@ export interface FetchOptions {
   sinceUnix?: number;
   /** 取得の上限時刻（UNIX 秒）。未指定なら「現在」。 */
   untilUnix?: number;
-  /** 全体のタイムアウト（ms）。 */
+  /**
+   * 1 リクエスト（= 1 リレー × 1 ウィンドウ）の fetchAllEvents をラップするタイムアウト（ms）。
+   * これを超えたウィンドウ取得だけを中断し、**他のリレーには一切影響しない**。
+   * 500 件級のページ取得に耐えるよう既定は大きめ（DEFAULTS.windowTimeoutMs）。
+   */
+  windowTimeoutMs?: number;
+  /**
+   * 1 リレーが runRelay 全体（全ウィンドウ処理）に費やせる総時間の上限（ms）。
+   * 超えたリレーだけを timeout で打ち切り、**他のリレーは取得を続行する**。
+   * NostrActivity の「タイムアウトはリクエスト／リレー単位に閉じる」設計に倣う。
+   */
+  relayTimeoutMs?: number;
+  /**
+   * 任意の全体安全上限（ms）。`0`/未指定で無効。
+   * これは**主たる打ち切り手段ではなく**、暴走を防ぐ二次的な保険にすぎない。
+   * primary な制御は windowTimeoutMs / relayTimeoutMs が担う。
+   */
+  overallTimeoutMs?: number;
+  /**
+   * @deprecated 旧「取得全体のタイムアウト（グローバル）」。後方互換のため残す。
+   * overallTimeoutMs（全体安全上限）の別名として解釈する。指定しても全リレーを
+   * 一括停止する旧来のグローバル挙動には戻らない（安全上限としてのみ働く）。
+   */
   timeoutMs?: number;
   /** kind を絞りたいとき（既定は未指定＝全 kind）。 */
   kinds?: number[];
@@ -153,8 +175,21 @@ const DEFAULTS = {
   minWindowSeconds: 3600, // 1 時間
   maxWindows: 5000,
   maxEvents: 0, // 0 = 無制限
-  timeoutMs: 12000,
+  // ── タイムアウトは「リクエスト／リレー単位」に分割する（グローバルではない） ──
+  // 旧実装は 12〜15s の単一グローバル期限で全リレーを一括中断していたが、500 件級の
+  // ページ取得には小さすぎた。NostrActivity に倣い、責務を 3 段に分けて広めに取る。
+  windowTimeoutMs: 30000, // 1 リクエスト（1 リレー × 1 ウィンドウ）の上限。30s。
+  relayTimeoutMs: 120000, // 1 リレーの総時間上限。120s。超えてもそのリレーだけ打ち切る。
+  overallTimeoutMs: 0, // 全体安全上限。0 = 無効（既定は使わない＝二次的な保険）。
 } as const;
+
+/** ウィンドウ（1 リクエスト）のタイムアウトを表す内部エラー。失敗（failed）と区別する。 */
+class WindowTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`window fetch timed out after ${timeoutMs}ms`);
+    this.name = "WindowTimeoutError";
+  }
+}
 
 /** 終端（これ以上ウィンドウを処理しない）状態か。 */
 function isTerminal(status: RelayStat["status"]): boolean {
@@ -194,7 +229,20 @@ export async function queryUserEvents(
   const minWindow = clampPositive(opts.minWindowSeconds, DEFAULTS.minWindowSeconds);
   const maxWindows = clampPositive(opts.maxWindows, DEFAULTS.maxWindows);
   const maxEvents = Math.max(0, opts.maxEvents ?? DEFAULTS.maxEvents);
-  const timeoutMs = clampPositive(opts.timeoutMs, DEFAULTS.timeoutMs);
+  // タイムアウト 3 段。window / relay は positive 既定、overall は 0=無効を許す安全上限。
+  const windowTimeoutMs = clampPositive(
+    opts.windowTimeoutMs,
+    DEFAULTS.windowTimeoutMs,
+  );
+  const relayTimeoutMs = clampPositive(
+    opts.relayTimeoutMs,
+    DEFAULTS.relayTimeoutMs,
+  );
+  // overallTimeoutMs が未指定なら、後方互換で旧 timeoutMs を「安全上限」として読む。
+  const overallTimeoutMs = Math.max(
+    0,
+    Math.floor(opts.overallTimeoutMs ?? opts.timeoutMs ?? DEFAULTS.overallTimeoutMs),
+  );
   const nowSec = Math.floor(Date.now() / 1000);
   const until = opts.untilUnix ?? nowSec;
   const since = opts.sinceUnix ?? DEFAULT_SINCE;
@@ -213,8 +261,13 @@ export async function queryUserEvents(
     );
 
   const startedAt = Date.now();
-  const ac = new AbortController();
-  const deadline = setTimeout(() => ac.abort(), timeoutMs);
+  // 全体安全上限（任意・二次的）。0=無効なら一切作らない＝primary な挙動は per-relay/window。
+  // これが発火しても「全リレーを巻き込む」のはあくまで暴走防止の最終手段にすぎない。
+  const overallAc = overallTimeoutMs > 0 ? new AbortController() : null;
+  const overallTimer =
+    overallAc != null
+      ? setTimeout(() => overallAc.abort(), overallTimeoutMs)
+      : null;
 
   // グローバル状態（全リレーで共有）。
   const collected = new Map<string, NostrEvent>();
@@ -286,14 +339,69 @@ export async function queryUserEvents(
     return wins; // 末尾が最新ウィンドウ＝スタックで最初に処理される。
   }
 
+  /**
+   * 1 リレー × 1 ウィンドウの fetchAllEvents を、**そのウィンドウ専用の AbortController**で
+   * 時間制限つきに実行する。タイムアウトはこの 1 リクエストにのみ閉じ、他リレー・他ウィンドウ
+   * の signal とは独立。fetcher が signal を尊重しなくても、Promise.race で wall-clock を必ず
+   * 縛る（デバッグしやすく、ハングしない）。全体安全上限（overallAc）が発火したら連動して中断。
+   */
+  async function fetchWindowBounded(
+    relayUrl: string,
+    w: Window,
+    timeoutMs: number,
+  ): Promise<NostrEvent[]> {
+    const winAc = new AbortController();
+    // 全体安全上限が（既に/今後）発火したら、このウィンドウの signal にも伝播させる。
+    const onOverallAbort = (): void => winAc.abort();
+    if (overallAc) {
+      if (overallAc.signal.aborted) winAc.abort();
+      else overallAc.signal.addEventListener("abort", onOverallAbort, { once: true });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        winAc.abort();
+        reject(new WindowTimeoutError(timeoutMs));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        fetcher.fetchAllEvents(
+          [relayUrl],
+          filter,
+          { since: w.since, until: w.until },
+          {
+            sort: false,
+            signal: winAc.signal,
+            connectTimeoutMs: Math.min(timeoutMs, 5000),
+            limitPerReq: 5000,
+          },
+        ),
+        timeout,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (overallAc) overallAc.signal.removeEventListener("abort", onOverallAbort);
+    }
+  }
+
   /** 1 リレーを独立に、適応的タイムウィンドウで処理する。例外は内部で握りつぶす。 */
   async function runRelay(rt: RelayStat): Promise<void> {
     rt.status = "querying";
     emit();
     const stack: Window[] = seedWindows();
+    // このリレー専用の総時間期限。超えてもこのリレーだけ timeout で打ち切る（他は無関係）。
+    const relayStartedAt = Date.now();
+    const relayDeadline = relayStartedAt + relayTimeoutMs;
 
     while (stack.length > 0) {
-      if (ac.signal.aborted || Date.now() - startedAt >= timeoutMs) {
+      // 全体安全上限（任意）が発火したら、このリレーは timeout で打ち切る。
+      if (overallAc?.signal.aborted) {
+        rt.status = "timeout";
+        break;
+      }
+      // このリレーの総時間上限を超えたら、このリレーだけ打ち切る。
+      if (Date.now() >= relayDeadline) {
         rt.status = "timeout";
         break;
       }
@@ -309,22 +417,27 @@ export async function queryUserEvents(
 
       const w = stack.pop() as Window;
 
+      // このウィンドウの実効タイムアウト = min(windowTimeoutMs, リレー残り時間)。
+      // リレー期限を超えてまで 1 ウィンドウを待たない。
+      const effWindowTimeout = Math.max(
+        1,
+        Math.min(windowTimeoutMs, relayDeadline - Date.now()),
+      );
+
       let evs: NostrEvent[];
       try {
-        evs = await fetcher.fetchAllEvents(
-          [rt.url],
-          filter,
-          { since: w.since, until: w.until },
-          {
-            sort: false,
-            signal: ac.signal,
-            connectTimeoutMs: Math.min(timeoutMs, 5000),
-            limitPerReq: 5000,
-          },
-        );
+        evs = await fetchWindowBounded(rt.url, w, effWindowTimeout);
       } catch (err) {
-        if (ac.signal.aborted || Date.now() - startedAt >= timeoutMs) {
-          rt.status = "timeout";
+        // タイムアウトの種類を切り分ける（いずれも**このリレーに閉じる**。他リレーは継続）。
+        if (overallAc?.signal.aborted) {
+          rt.status = "timeout"; // 全体安全上限。
+          rt.error = `overall safety timeout (${overallTimeoutMs}ms)`;
+        } else if (Date.now() >= relayDeadline) {
+          rt.status = "timeout"; // リレー総時間上限。
+          rt.error = `relay timeout (${relayTimeoutMs}ms)`;
+        } else if (err instanceof WindowTimeoutError) {
+          rt.status = "timeout"; // ウィンドウ（1 リクエスト）タイムアウト。
+          rt.error = err.message;
         } else {
           rt.status = "failed";
           rt.error = err instanceof Error ? err.message : String(err);
@@ -382,7 +495,7 @@ export async function queryUserEvents(
     // すべてのリレーを並行に処理。1 つが失敗しても他は続く。
     await Promise.allSettled(runtimes.map((rt) => runRelay(rt)));
   } finally {
-    clearTimeout(deadline);
+    if (overallTimer) clearTimeout(overallTimer);
     fetcher.shutdown?.();
   }
   emit(true);

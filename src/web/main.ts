@@ -42,7 +42,9 @@ const relaysInput = $<HTMLTextAreaElement>("relays");
 const denseThresholdInput = $<HTMLInputElement>("denseThreshold");
 const maxWindowsInput = $<HTMLInputElement>("maxWindows");
 const tzInput = $<HTMLInputElement>("tz");
-const timeoutInput = $<HTMLInputElement>("timeout");
+const windowTimeoutInput = $<HTMLInputElement>("windowTimeout");
+const relayTimeoutInput = $<HTMLInputElement>("relayTimeout");
+const overallTimeoutInput = $<HTMLInputElement>("overallTimeout");
 const submitBtn = $<HTMLButtonElement>("submit");
 const nip07Btn = $<HTMLButtonElement>("nip07");
 const statusEl = $<HTMLParagraphElement>("status");
@@ -154,7 +156,11 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
 
   const denseThreshold = clampNum(Number(denseThresholdInput.value), 50, 5000, 1000);
   const maxWindows = clampNum(Number(maxWindowsInput.value), 1, 20000, 5000);
-  const timeoutMs = clampNum(Number(timeoutInput.value), 1000, 60000, 15000);
+  // タイムアウトは責務ごとに分割（グローバルな一括停止ではない）。
+  const windowTimeoutMs = clampNum(Number(windowTimeoutInput.value), 2000, 120000, 30000);
+  const relayTimeoutMs = clampNum(Number(relayTimeoutInput.value), 5000, 600000, 120000);
+  // 全体安全上限は 0=無効を許す（min を 0 にする）。
+  const overallTimeoutMs = clampNum(Number(overallTimeoutInput.value), 0, 1800000, 0);
   const tz = clampNum(Number(tzInput.value), -12, 14, 9);
 
   const config: ScoringConfig = {
@@ -179,7 +185,9 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       relays,
       denseThreshold,
       maxWindows,
-      timeoutMs,
+      windowTimeoutMs,
+      relayTimeoutMs,
+      overallTimeoutMs,
       // 取得の途中経過をライブ表示する（リレー応答数・件数・遡れた最古など）。
       onProgress: (p) => renderProgress(p),
     });

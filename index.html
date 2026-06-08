@@ -64,8 +64,22 @@
                 <input id="tz" name="tz" type="number" min="-12" max="14" value="9" />
               </label>
               <label class="field">
-                <span class="field-label">タイムアウト (ms)</span>
-                <input id="timeout" name="timeout" type="number" min="1000" max="60000" step="500" value="15000" />
+                <span class="field-label">ウィンドウ取得タイムアウト (ms)</span>
+                <input id="windowTimeout" name="windowTimeout" type="number" min="2000" max="120000" step="1000" value="30000" />
+              </label>
+            </div>
+            <p class="hint">
+              タイムアウトは<strong>グローバル（全体一括停止）ではなくリクエスト／リレー単位</strong>です。
+              あるリレー（またはウィンドウ）が時間切れになっても、<strong>他のリレーは取得を続行</strong>します。
+            </p>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">リレー総取得タイムアウト (ms)</span>
+                <input id="relayTimeout" name="relayTimeout" type="number" min="5000" max="600000" step="5000" value="120000" />
+              </label>
+              <label class="field">
+                <span class="field-label">全体安全上限 (ms・0 で無効)</span>
+                <input id="overallTimeout" name="overallTimeout" type="number" min="0" max="1800000" step="10000" value="0" />
               </label>
             </div>
           </div>
