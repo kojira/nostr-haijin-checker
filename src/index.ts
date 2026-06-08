@@ -18,7 +18,12 @@ import { DEFAULT_RELAYS } from "./nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "./nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "./scoring/index.js";
 import { formatReport } from "./report.js";
-import type { ScoringConfig, StreakInfo } from "./types.js";
+import {
+  ANALYSIS_STAGE_LABELS,
+  type AnalysisProgress,
+  type ScoringConfig,
+  type StreakInfo,
+} from "./types.js";
 
 const program = new Command();
 
@@ -177,6 +182,21 @@ function renderCliProgress(p: FetchProgress): void {
   process.stderr.write(line);
 }
 
+/**
+ * 採点（解析）の途中経過を stderr に 1 行で上書き表示する（--json 時は出さない）。
+ * 取得後に「いまどのステージを・何件まで処理したか」を数値で見せ、巨大データセットでも
+ * 固まっていないことを伝える。件数で測れる prepare/aggregate は processed/total を、
+ * 件数で測れない signals/finalize はステージ名だけを示す。
+ */
+function renderCliAnalysisProgress(p: AnalysisProgress): void {
+  const label = ANALYSIS_STAGE_LABELS[p.stage];
+  const counted = p.stage === "prepare" || p.stage === "aggregate";
+  const detail = counted
+    ? `${p.processed.toLocaleString()}/${p.total.toLocaleString()} 件`
+    : `${p.total.toLocaleString()} 件`;
+  process.stderr.write(`\r解析中... [${label}] ${detail}            `);
+}
+
 async function main(): Promise<void> {
   let pubkeyHex: string;
   let npub: string;
@@ -262,6 +282,11 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── 解析（採点）フェーズ。巨大データセットでも「取得後に固まっていない」ことを
+  // ステージ単位の数値進捗で見せる。--json 時は機械出力を汚さないよう通知しない。
+  if (!opts.json) {
+    process.stderr.write(`解析中... ${events.length.toLocaleString()} 件を採点します。\n`);
+  }
   const result = scoreEvents(
     npub,
     pubkeyHex,
@@ -270,7 +295,12 @@ async function main(): Promise<void> {
     nowSec,
     meta,
     streak,
+    opts.json ? undefined : renderCliAnalysisProgress,
   );
+  if (!opts.json) {
+    // 解析の進捗行を確定させる（次の出力と混ざらないよう改行）。
+    process.stderr.write("\n");
+  }
 
   if (opts.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");

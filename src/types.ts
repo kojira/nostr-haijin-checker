@@ -132,6 +132,59 @@ export interface AnalyzedEvent {
 }
 
 /**
+ * 採点（解析）フェーズの内部ステージ。取得（FetchProgress）とは別軸で、
+ * 「取得後にどこまで解析が進んだか」を表す。巨大データセットでも UI が
+ * 「固まっていない／いま何をしているか」を見せるために使う。
+ *  - prepare   : 生イベントの整形（TZ 補正・種別判定）。件数で進捗を測れる。
+ *  - aggregate : 1 パス集計（時刻ヒストグラム・稼働日・交流件数）。件数で測れる。
+ *  - signals   : 各シグナルの算出（連投の時系列ソート・走査を含む）。
+ *  - finalize  : 総合スコア・サブスコア・注意書きの確定。
+ */
+export type AnalysisStage = "prepare" | "aggregate" | "signals" | "finalize";
+
+/**
+ * 採点（解析）の途中経過スナップショット。scoreEvents の onProgress に渡る。
+ * FetchProgress（取得の途中経過）と対になる、解析フェーズ用の進捗型。
+ */
+export interface AnalysisProgress {
+  /** いま処理中のステージ。 */
+  stage: AnalysisStage;
+  /**
+   * 現ステージで処理済みのイベント件数。件数で測れないステージ（signals/finalize）
+   * では total と同じ値（=ステージ完了の合図）にする。
+   */
+  processed: number;
+  /** 解析対象（許可 kind に絞ったあと）のイベント総数。 */
+  total: number;
+}
+
+/** 採点（解析）の途中経過を受け取るコールバック。 */
+export type AnalysisProgressCallback = (progress: AnalysisProgress) => void;
+
+/**
+ * 採点フローのトップレベル・フェーズ。取得→ストリーク→解析→描画準備の 4 段階で、
+ * 「いま全体のどこにいるか」を CLI/Web に一貫した語彙で見せるための軸。
+ * 解析フェーズ（analyzing）の内訳は AnalysisStage（prepare/aggregate/signals/finalize）。
+ */
+export type WorkflowPhase = "fetching" | "streak" | "analyzing" | "rendering";
+
+/** WorkflowPhase の日本語ラベル（CLI/Web で表記を揃える）。 */
+export const WORKFLOW_PHASE_LABELS: Record<WorkflowPhase, string> = {
+  fetching: "取得中",
+  streak: "ストリーク確認中",
+  analyzing: "解析中",
+  rendering: "描画準備中",
+};
+
+/** AnalysisStage の日本語ラベル（解析フェーズの内訳表示で CLI/Web を揃える）。 */
+export const ANALYSIS_STAGE_LABELS: Record<AnalysisStage, string> = {
+  prepare: "整形",
+  aggregate: "集計",
+  signals: "シグナル算出",
+  finalize: "仕上げ",
+};
+
+/**
  * シグナルの所属軸。
  *  - shortTerm : 短期アクティブ度（観測ウィンドウ内の密度・稼働日率）。
  *  - pattern   : 生活・利用パターン（常時稼働度・連投・交流）。

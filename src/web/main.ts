@@ -14,12 +14,16 @@ import {
 import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
-import type {
-  RelayStat,
-  ScoreResult,
-  ScoringConfig,
-  SignalScore,
-  StreakInfo,
+import {
+  ANALYSIS_STAGE_LABELS,
+  WORKFLOW_PHASE_LABELS,
+  type AnalysisProgress,
+  type RelayStat,
+  type ScoreResult,
+  type ScoringConfig,
+  type SignalScore,
+  type StreakInfo,
+  type WorkflowPhase,
 } from "../types.js";
 
 /**
@@ -185,6 +189,9 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   url.searchParams.set("npub", npub);
   history.replaceState(null, "", url.toString());
 
+  // ストリークを実行する場合のみフェーズ・ステッパーに「ストリーク確認中」を出す。
+  includeStreakStep = streakEnabled;
+
   setBusy(
     true,
     `リレーへ問い合わせ中...（${relays.length} relays）`,
@@ -210,6 +217,8 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     let streak: StreakInfo | null = null;
     if (streakEnabled) {
       setBusy(true, "連続実稼働日数（ストリーク）を確認中…");
+      renderPhasePanel("streak", streakPhaseBodyHtml());
+      await nextFrame();
       try {
         streak = await lookupUserStreak(pubkeyHex, {
           relays,
@@ -223,6 +232,17 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       }
     }
 
+    // ── 解析（採点）フェーズ ──
+    // scoreEvents は同期処理なので、まず「解析中」パネルを描画して 1 フレーム譲り、
+    // 利用者にフェーズの切り替わりを見せてから重い処理に入る。巨大データセットでも
+    // フェーズ・ステッパーの「現フェーズ」ドットが（コンポジタ駆動の CSS アニメで）
+    // 脈打ち続けるため、固まって見えない。onProgress 未指定なら従来どおり通知しない。
+    setBusy(true, "解析中…（取得後のスコアリング）");
+    renderPhasePanel(
+      "analyzing",
+      analysisPhaseBodyHtml({ stage: "prepare", processed: 0, total: events.length }),
+    );
+    await nextFrame();
     const result = scoreEvents(
       npub,
       pubkeyHex,
@@ -231,8 +251,16 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       nowSec,
       meta,
       streak,
+      (p) => renderPhasePanel("analyzing", analysisPhaseBodyHtml(p)),
     );
+
+    // ── 描画準備フェーズ ── 大きな結果を整形・DOM 構築する直前にフェーズを見せる。
+    setBusy(true, "描画準備中…");
+    renderPhasePanel("rendering", renderingPhaseBodyHtml(result));
+    await nextFrame();
     renderResult(result);
+    // 全フェーズ完了をステッパーに反映する（現フェーズの脈動を止める）。
+    renderPhasePanel(null, donePhaseBodyHtml(result));
     const dug = meta.historyComplete
       ? "リレーが返す限界まで到達"
       : `掘り切れず（${meta.stopReason}）`;
@@ -261,12 +289,54 @@ const RELAY_STATUS_VIEW: Record<RelayStat["status"], { label: string; cls: strin
   timeout: { label: "時間切れ", cls: "rs-fail" },
 };
 
+/** 次の描画フレームまで待つ（同期処理の前に画面を 1 度更新させるため）。 */
+const nextFrame = (): Promise<void> =>
+  new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+/** このフローでストリーク確認フェーズを表示するか（無効時はステッパーから省く）。 */
+let includeStreakStep = true;
+
+/** フェーズ・ステッパーに並べるトップレベル・フェーズの順序。 */
+const PHASE_ORDER: WorkflowPhase[] = [
+  "fetching",
+  "streak",
+  "analyzing",
+  "rendering",
+];
+
 /**
- * 取得の途中経過パネルを描画する。取得中も完了後も同じ関数で更新する。
- * 「いま何件・どのリレーがどこまで・どこまで遡れたか」を数値で見せる。
+ * 4 フェーズ（取得中 / ストリーク確認中 / 解析中 / 描画準備中）のステッパー HTML。
+ * active が現フェーズ（null は全完了）。完了済みは ✓、現フェーズはドットが脈打つ。
+ * これにより、解析のような同期処理でメインスレッドが詰まっていても、コンポジタ駆動の
+ * CSS アニメーションでドットが動き続け、「固まっていない」ことが伝わる。
  */
-function renderProgress(p: FetchProgress): void {
+function phaseStepperHtml(active: WorkflowPhase | null): string {
+  const steps = PHASE_ORDER.filter(
+    (p) => includeStreakStep || p !== "streak",
+  );
+  const activeIdx = active ? steps.indexOf(active) : steps.length;
+  const items = steps
+    .map((p, i) => {
+      const state = i < activeIdx ? "done" : i === activeIdx ? "active" : "todo";
+      return `<li class="phase-step phase-${state}">
+        <span class="phase-dot" aria-hidden="true"></span>
+        <span class="phase-name">${escapeHtml(WORKFLOW_PHASE_LABELS[p])}</span>
+      </li>`;
+    })
+    .join("");
+  return `<ol class="phase-steps">${items}</ol>`;
+}
+
+/** フェーズ・ステッパー＋フェーズ固有の本文を進捗パネルに描画する共通関数。 */
+function renderPhasePanel(active: WorkflowPhase | null, bodyHtml: string): void {
   progressEl.hidden = false;
+  progressEl.innerHTML = phaseStepperHtml(active) + bodyHtml;
+}
+
+/**
+ * 取得フェーズの本文 HTML。「いま何件・どのリレーがどこまで・どこまで遡れたか」を数値で見せる。
+ */
+function fetchPhaseBodyHtml(p: FetchProgress): string {
   const done = p.phase === "done";
   const oldest = fmtDate(p.oldestReached);
   const elapsed = (p.elapsedMs / 1000).toFixed(1);
@@ -284,7 +354,7 @@ function renderProgress(p: FetchProgress): void {
     })
     .join("");
 
-  progressEl.innerHTML = `
+  return `
     <h2 class="progress-title">${done ? "取得完了" : "リレーから取得中…"}</h2>
     <div class="progress-grid">
       <div class="pg-cell"><span class="pg-num">${p.collectedUnique}</span><span class="pg-lbl">取得イベント</span></div>
@@ -295,6 +365,63 @@ function renderProgress(p: FetchProgress): void {
     <p class="pg-oldest">ここまで遡れた最古: <b>${escapeHtml(oldest)}</b> ・ 経過 ${elapsed}s ・ 完了 ${p.relaysCompleted}/${p.relaysTotal} リレー</p>
     <ul class="relay-list">${relayRows}</ul>
   `;
+}
+
+/** ストリーク確認フェーズの本文（別経路の軽量ルックアップ中であることを示す）。 */
+function streakPhaseBodyHtml(): string {
+  return `
+    <h2 class="progress-title">連続実稼働日数（ストリーク）を確認中…</h2>
+    <p class="pg-oldest">全件取得とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを軽量に遡っています。</p>
+  `;
+}
+
+/**
+ * 解析（採点）フェーズの本文。件数で測れる prepare/aggregate は processed/total と
+ * 進捗バーを、件数で測れない signals/finalize はステージ名（＝そのステージに入った合図）を見せる。
+ */
+function analysisPhaseBodyHtml(p: AnalysisProgress): string {
+  const label = ANALYSIS_STAGE_LABELS[p.stage];
+  const counted = p.stage === "prepare" || p.stage === "aggregate";
+  const pct =
+    counted && p.total > 0
+      ? Math.min(100, Math.round((p.processed / p.total) * 100))
+      : 100;
+  const detail = counted
+    ? `${p.processed.toLocaleString()} / ${p.total.toLocaleString()} 件`
+    : `${p.total.toLocaleString()} 件`;
+  return `
+    <h2 class="progress-title">解析中…（${escapeHtml(label)}）</h2>
+    <div class="progress-grid">
+      <div class="pg-cell"><span class="pg-num">${p.total.toLocaleString()}</span><span class="pg-lbl">解析対象イベント</span></div>
+      <div class="pg-cell"><span class="pg-num">${escapeHtml(label)}</span><span class="pg-lbl">現ステージ</span></div>
+    </div>
+    <p class="pg-oldest">処理済み <b>${escapeHtml(detail)}</b></p>
+    <div class="bar analysis-bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+  `;
+}
+
+/** 描画準備フェーズの本文（採点完了→結果 DOM を構築する直前）。 */
+function renderingPhaseBodyHtml(r: ScoreResult): string {
+  return `
+    <h2 class="progress-title">描画準備中…</h2>
+    <p class="pg-oldest">${r.sampleSize.toLocaleString()} 件のスコアと内訳を整形しています。</p>
+  `;
+}
+
+/** 全フェーズ完了時の本文（ステッパーは全 ✓・脈動なし）。 */
+function donePhaseBodyHtml(r: ScoreResult): string {
+  return `
+    <h2 class="progress-title">完了</h2>
+    <p class="pg-oldest">${r.sampleSize.toLocaleString()} 件を採点しました。</p>
+  `;
+}
+
+/**
+ * 取得の途中経過パネルを描画する。取得中も完了後も同じ関数で更新する。
+ * フェーズ・ステッパー（取得中…）＋取得詳細を描く。
+ */
+function renderProgress(p: FetchProgress): void {
+  renderPhasePanel("fetching", fetchPhaseBodyHtml(p));
 }
 
 /** リレー URL を短く（ホスト名相当）表示する。 */

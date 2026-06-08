@@ -109,10 +109,21 @@ export interface EventAggregate {
 }
 
 /**
+ * 進捗コールバックを呼ぶ間隔（件数）。prepareEvents と揃える。
+ */
+const AGGREGATE_PROGRESS_CHUNK = 5000;
+
+/**
  * イベント配列を 1 パスで集計する。O(n) / 追加メモリは O(distinct days) のみ。
  * 巨大配列でもスタックや一時配列を爆発させない（giant spread / 多重 map・filter を避ける）。
+ *
+ * @param onProgress 任意。集計済み件数を AGGREGATE_PROGRESS_CHUNK 件ごと（と最後）に通知する。
+ *            未指定なら通知しないだけで、集計結果は不変。
  */
-export function aggregateEvents(events: AnalyzedEvent[]): EventAggregate {
+export function aggregateEvents(
+  events: AnalyzedEvent[],
+  onProgress?: (processed: number) => void,
+): EventAggregate {
   const hourCounts = new Array<number>(24).fill(0);
   const dayKeys = new Set<string>();
   let minCreatedAt = Infinity;
@@ -121,6 +132,7 @@ export function aggregateEvents(events: AnalyzedEvent[]): EventAggregate {
   let reactions = 0;
   let reposts = 0;
 
+  let i = 0;
   for (const e of events) {
     if (e.createdAt < minCreatedAt) minCreatedAt = e.createdAt;
     if (e.createdAt > maxCreatedAt) maxCreatedAt = e.createdAt;
@@ -129,7 +141,10 @@ export function aggregateEvents(events: AnalyzedEvent[]): EventAggregate {
     if (e.isReply) replies++;
     if (e.isReaction) reactions++;
     if (e.isRepost) reposts++;
+    i++;
+    if (onProgress && i % AGGREGATE_PROGRESS_CHUNK === 0) onProgress(i);
   }
+  onProgress?.(events.length);
 
   return {
     total: events.length,

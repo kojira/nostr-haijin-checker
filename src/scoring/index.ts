@@ -7,6 +7,8 @@
  * 将来の Web/LLM 層からもそのまま再利用できる。
  */
 import type {
+  AnalysisProgressCallback,
+  AnalysisStage,
   HistoryMeta,
   NostrEvent,
   ObservationInfo,
@@ -67,6 +69,9 @@ export const WEIGHTS = {
  *            シグナル（長期軸・重み 0.12）として総合スコアに加点し、長期軸サブスコアにも
  *            反映する。連続日数が長いほどスコアが上がる（約 60 日で頭打ちの飽和加点）。
  *            ストリーク経路を介さない（null）場合は合算・正規化・signals のいずれにも現れない。
+ * @param onProgress 任意。解析（採点）の途中経過を prepare → aggregate → signals → finalize の
+ *            ステージ単位で通知する。巨大データセットでも「取得後に固まっていない」ことを
+ *            UI/CLI に見せるために使う。**未指定なら一切通知せず、挙動・結果は従来どおり**。
  */
 export function scoreEvents(
   npub: string,
@@ -76,6 +81,7 @@ export function scoreEvents(
   now: number = Math.floor(Date.now() / 1000),
   fetchMeta: HistoryMeta | null = null,
   streak: StreakInfo | null = null,
+  onProgress?: AnalysisProgressCallback,
 ): ScoreResult {
   const notes: string[] = [];
 
@@ -93,10 +99,26 @@ export function scoreEvents(
     return emptyResult(npub, pubkeyHex, config, notes, fetchMeta, streak);
   }
 
-  const events = prepareEvents(rawEvents, config);
-  // 全シグナルが共有する集計値を **1 パス** で算出する（巨大スプレッド・多重走査を回避）。
+  // 解析の途中経過を「件数で測れるステージは件数で、それ以外は完了の合図で」通知する。
+  // onProgress 未指定なら emit は no-op で、走査ロジックは従来と同一。
+  const total = rawEvents.length;
+  const emit = onProgress
+    ? (stage: AnalysisStage, processed: number) =>
+        onProgress({ stage, processed, total })
+    : undefined;
+
+  // STEP 1: 整形（TZ 補正・種別判定）。件数で進捗を出せる重いステップ。
+  const events = prepareEvents(
+    rawEvents,
+    config,
+    emit ? (n) => emit("prepare", n) : undefined,
+  );
+  // STEP 2: 全シグナルが共有する集計値を **1 パス** で算出する（巨大スプレッド・多重走査を回避）。
   // 195k 件規模でも min/max・稼働日・時刻ヒストグラム・交流件数をここで一度だけ数える。
-  const agg = aggregateEvents(events);
+  const agg = aggregateEvents(events, emit ? (n) => emit("aggregate", n) : undefined);
+  // STEP 3: 各シグナルの算出（連投は時系列ソート・走査を含む）。ここからは件数では測れないので
+  // ステージの切り替わりだけを通知する（processed=total＝そのステージに入ったことの合図）。
+  emit?.("signals", total);
   const observation = computeObservation(agg, now);
 
   const shortTerm = shortTermActivitySignal(agg, WEIGHTS.shortTerm);
@@ -178,6 +200,9 @@ export function scoreEvents(
   // ストリーク（連続実稼働日数）は heavy fetch とは別経路だが、加点済み（上の streakSignal）。
   // ここでは効き方・限界（truncated 等）を注意書きに反映する。
   for (const n of streakNotes(streak)) notes.push(n);
+
+  // STEP 4: 結果オブジェクトの確定（総合スコア・サブスコア・注意書きは算出済み）。
+  emit?.("finalize", total);
 
   return {
     npub,
