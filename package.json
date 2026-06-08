@@ -1,0 +1,46 @@
+{
+  "name": "nostr-haijin-checker",
+  "version": "0.1.0",
+  "description": "Nostrの投稿パターンから「廃人度（Haijin score）」を説明可能なロジックで採点するCLIツール",
+  "type": "module",
+  "bin": {
+    "nostr-haijin-checker": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "web:dev": "vite",
+    "web:build": "vite build",
+    "web:preview": "vite preview",
+    "web:typecheck": "tsc --noEmit -p tsconfig.web.json",
+    "clean": "rm -rf dist dist-web"
+  },
+  "keywords": [
+    "nostr",
+    "cli",
+    "haijin",
+    "scoring",
+    "npub"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "nostr-tools": "^2.7.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

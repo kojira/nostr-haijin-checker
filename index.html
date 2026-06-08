@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nostr 廃人度チェッカー 💀</title>
+    <meta
+      name="description"
+      content="Nostr の公開投稿パターンから「廃人度（Haijin score）」を説明可能なロジックで採点します。"
+    />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <h1>Nostr 廃人度チェッカー <span aria-hidden="true">💀</span></h1>
+        <p class="lead">
+          <code>npub</code> を入力すると、複数リレーから公開投稿を取得して
+          <strong>廃人度スコア</strong>・ランク・各シグナルの根拠を表示します。
+          採点はすべてあなたのブラウザ内で完結します（サーバー不要）。
+        </p>
+      </header>
+
+      <form id="form" class="card form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">npub（または 64桁 hex 公開鍵）</span>
+          <input
+            id="npub"
+            name="npub"
+            type="text"
+            placeholder="npub1..."
+            spellcheck="false"
+            required
+          />
+        </label>
+
+        <details class="advanced">
+          <summary>詳細設定（リレー・取得件数・タイムゾーン）</summary>
+          <div class="advanced-body">
+            <label class="field">
+              <span class="field-label">リレー（1行に1つ・<code>wss://</code> のみ）</span>
+              <textarea id="relays" name="relays" rows="5" spellcheck="false"></textarea>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">取得上限 / リレー</span>
+                <input id="limit" name="limit" type="number" min="1" max="2000" value="500" />
+              </label>
+              <label class="field">
+                <span class="field-label">タイムゾーン (UTC offset 時)</span>
+                <input id="tz" name="tz" type="number" min="-12" max="14" value="9" />
+              </label>
+              <label class="field">
+                <span class="field-label">タイムアウト (ms)</span>
+                <input id="timeout" name="timeout" type="number" min="1000" max="30000" step="500" value="8000" />
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <button id="submit" type="submit" class="btn">採点する</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </form>
+
+      <section id="result" class="result" hidden></section>
+
+      <section class="card notice">
+        <h2>ブラウザ直アクセスの制約</h2>
+        <ul>
+          <li>
+            このページは HTTPS で配信されるため、リレーは
+            <code>wss://</code>（暗号化）のみ利用できます。<code>ws://</code> は
+            ブラウザの Mixed Content ポリシーでブロックされます。
+          </li>
+          <li>
+            リレーの接続ポリシーや一時的な障害により、一部リレーに接続できず
+            観測範囲が狭まることがあります（スコアは観測できた範囲の近似値です）。
+          </li>
+          <li>
+            取得件数・保持期間はリレー依存です。古い投稿は取得できないことがあります。
+          </li>
+          <li>
+            これは娯楽・自己診断目的の MVP であり、依存度の医学的判定ではありません。
+          </li>
+        </ul>
+      </section>
+
+      <footer class="footer">
+        <p>
+          採点ロジックは CLI 版と共通（<code>src/scoring/</code>）。
+          ソース・詳細は
+          <a href="https://github.com/" id="repo-link" rel="noopener">リポジトリ</a>
+          を参照してください。
+        </p>
+      </footer>
+    </main>
+
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>
