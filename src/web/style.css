@@ -383,3 +383,143 @@ code {
 .history-line.history-warn {
   color: var(--error);
 }
+
+/* ---- 取得ライブ進捗パネル ---- */
+.progress-title {
+  margin: 0 0 14px;
+  font-size: 1.05rem;
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pg-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--bg-elev);
+  border-radius: 10px;
+  padding: 10px 6px;
+  text-align: center;
+}
+
+.pg-num {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-2);
+  line-height: 1.1;
+}
+
+.pg-num.pg-warn {
+  color: #ffcf6c;
+}
+
+.pg-lbl {
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+  margin-top: 2px;
+}
+
+.pg-oldest {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+}
+
+.relay-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.relay-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.82rem;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--bg-elev);
+  border-left: 3px solid var(--bar-bg);
+}
+
+.relay-host {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.relay-status {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.relay-meta {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.relay-item.rs-active {
+  border-left-color: var(--accent-2);
+}
+.relay-item.rs-active .relay-status {
+  color: var(--accent-2);
+}
+.relay-item.rs-ok {
+  border-left-color: #4cc38a;
+}
+.relay-item.rs-ok .relay-status {
+  color: #4cc38a;
+}
+.relay-item.rs-empty {
+  border-left-color: var(--fg-dim);
+}
+.relay-item.rs-empty .relay-status {
+  color: var(--fg-dim);
+}
+.relay-item.rs-fail {
+  border-left-color: var(--error);
+}
+.relay-item.rs-fail .relay-status {
+  color: var(--error);
+}
+.relay-item.rs-pending {
+  opacity: 0.6;
+}
+
+/* ---- 補足（fineprint・控えめ） ---- */
+.fineprint {
+  margin-top: 12px;
+  text-align: left;
+}
+
+.fineprint summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+  user-select: none;
+}
+
+.fineprint ul {
+  margin: 8px 0 0;
+  padding-left: 1.2em;
+  color: var(--fg-dim);
+}
+
+.fineprint li {
+  margin-bottom: 4px;
+}
+
+@media (max-width: 520px) {
+  .progress-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

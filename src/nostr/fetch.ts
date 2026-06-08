@@ -11,7 +11,12 @@
 import WebSocket from "ws";
 import { queryUserEvents, type FetchOptions, type FetchResult } from "./query.js";
 
-export type { FetchOptions, FetchResult } from "./query.js";
+export type {
+  FetchOptions,
+  FetchResult,
+  FetchProgress,
+  ProgressCallback,
+} from "./query.js";
 
 /**
  * 指定 pubkey(hex) のイベントを複数リレーから取得する（Node 用）。

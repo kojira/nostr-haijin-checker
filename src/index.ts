@@ -9,7 +9,7 @@
  * 取得(nostr/)・採点(scoring/) のロジックは独立モジュールに分離している。
  */
 import { Command } from "commander";
-import { fetchUserEvents } from "./nostr/fetch.js";
+import { fetchUserEvents, type FetchProgress } from "./nostr/fetch.js";
 import { DEFAULT_RELAYS } from "./nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "./nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "./scoring/index.js";
@@ -48,9 +48,7 @@ program
     "--since <unixsec>",
     "この時刻(UNIX秒)より古いイベントは取りに行かない（下限）",
   )
-  .option("-t, --tz <hours>", "深夜判定に使う UTC オフセット（時間）", "9")
-  .option("--late-start <hour>", "深夜帯の開始時刻(0-23)", "0")
-  .option("--late-end <hour>", "深夜帯の終了時刻(0-24, 含まない)", "5")
+  .option("-t, --tz <hours>", "時間分布の判定に使う UTC オフセット（時間）", "9")
   .option("--timeout <ms>", "取得全体のタイムアウト（ミリ秒）", "12000")
   .option("--json", "JSON で出力（プログラム連携用）", false)
   .addHelpText(
@@ -80,11 +78,30 @@ const opts = program.opts<{
   maxEvents: string;
   since?: string;
   tz: string;
-  lateStart: string;
-  lateEnd: string;
   timeout: string;
   json: boolean;
 }>();
+
+/** UNIX 秒を短い日付文字列に（進捗行用）。 */
+function fmtShort(sec: number | null): string {
+  if (sec == null) return "-";
+  return new Date(sec * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * 取得の途中経過を stderr に 1 行で上書き表示する（--json 時は出さない）。
+ * 「リレーいくつが応答/失敗・何件・何ページ・どこまで遡れたか」を数値で見せる。
+ */
+function renderCliProgress(p: FetchProgress): void {
+  const failed = p.relaysFailed > 0 ? ` 失敗 ${p.relaysFailed}` : "";
+  const line =
+    `\r取得中... リレー ${p.relaysSucceeded}/${p.relaysTotal} 応答${failed}` +
+    ` ・ ${p.collectedUnique} 件 ・ ${p.pagesFetched} ページ` +
+    ` ・ 最古 ${fmtShort(p.oldestReached)} ・ ${(p.elapsedMs / 1000).toFixed(
+      1,
+    )}s   `;
+  process.stderr.write(line);
+}
 
 async function main(): Promise<void> {
   let pubkeyHex: string;
@@ -108,8 +125,6 @@ async function main(): Promise<void> {
   const config: ScoringConfig = {
     ...DEFAULT_CONFIG,
     tzOffsetHours: Number(opts.tz),
-    lateNightStart: Number(opts.lateStart),
-    lateNightEnd: Number(opts.lateEnd),
   };
 
   const sinceUnix =
@@ -117,7 +132,7 @@ async function main(): Promise<void> {
 
   if (!opts.json) {
     console.error(
-      `リレーへ問い合わせ中... 過去へページング (${relays.length} relays, page-size ${opts.pageSize}, max-pages ${opts.maxPages})`,
+      `リレーへ問い合わせ中... 各リレーを過去へページング（${relays.length} relays, page-size ${opts.pageSize}, max-pages ${opts.maxPages}）。1 つ落ちても残りで継続します。`,
     );
   }
 
@@ -128,7 +143,13 @@ async function main(): Promise<void> {
     maxEvents: Number(opts.maxEvents),
     sinceUnix,
     timeoutMs: Number(opts.timeout),
+    onProgress: opts.json ? undefined : renderCliProgress,
   });
+
+  if (!opts.json) {
+    // 進捗行を確定させる（次の出力と混ざらないよう改行）。
+    process.stderr.write("\n");
+  }
 
   const result = scoreEvents(
     npub,

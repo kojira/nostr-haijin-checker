@@ -21,30 +21,28 @@ import {
   burstSignal,
   computeObservation,
   engagementSignal,
-  lateNightSignal,
+  temporalCoverageSignal,
   longTermRetentionSignal,
   observedWindow,
   shortTermActivitySignal,
 } from "./signals.js";
 import { rankForScore } from "./rank.js";
 
-/** デフォルトのスコアリング設定（JST・深夜0-5時）。 */
+/** デフォルトのスコアリング設定（JST）。 */
 export const DEFAULT_CONFIG: ScoringConfig = {
   tzOffsetHours: 9,
   timezoneLabel: "JST",
-  lateNightStart: 0,
-  lateNightEnd: 5,
 };
 
 /**
  * 各シグナルのベース重み。
- *  - 短期(shortTerm) + パターン(lateNight/bursts/engagement) で 0.80。
+ *  - 短期(shortTerm) + パターン(temporalCoverage/bursts/engagement) で 0.80。
  *  - 長期(longTerm) のベース重みは 0.20 だが、総合では観測信頼度で割り引かれる
  *    （confidence が低い＝観測ウィンドウが短いと、長期軸は総合へほぼ寄与しない）。
  */
 export const WEIGHTS = {
   shortTerm: 0.3,
-  lateNight: 0.2,
+  temporalCoverage: 0.2,
   bursts: 0.15,
   engagement: 0.15,
   longTerm: 0.2,
@@ -79,7 +77,10 @@ export function scoreEvents(
   const observation = computeObservation(events, now);
 
   const shortTerm = shortTermActivitySignal(events, WEIGHTS.shortTerm);
-  const lateNight = lateNightSignal(events, config, WEIGHTS.lateNight);
+  const temporalCoverage = temporalCoverageSignal(
+    events,
+    WEIGHTS.temporalCoverage,
+  );
   const bursts = burstSignal(events, WEIGHTS.bursts);
   const engagement = engagementSignal(events, WEIGHTS.engagement);
   // 長期軸の表示重みは「ベース重み × 信頼度」（短観測ではほぼ 0）。
@@ -90,7 +91,7 @@ export function scoreEvents(
 
   const signals: SignalScore[] = [
     shortTerm,
-    lateNight,
+    temporalCoverage,
     bursts,
     engagement,
     longTerm,
@@ -100,11 +101,14 @@ export function scoreEvents(
   // 「観測できた分」だけで正規化する（confidence-aware contribution）。
   // → 短観測の高密度ユーザーを「長期不明」で不当に減点せず、かつ古参を僭称もしない。
   const otherWeight =
-    WEIGHTS.shortTerm + WEIGHTS.lateNight + WEIGHTS.bursts + WEIGHTS.engagement;
+    WEIGHTS.shortTerm +
+    WEIGHTS.temporalCoverage +
+    WEIGHTS.bursts +
+    WEIGHTS.engagement;
   const effLongWeight = WEIGHTS.longTerm * observation.confidence;
   const numerator =
     shortTerm.score * WEIGHTS.shortTerm +
-    lateNight.score * WEIGHTS.lateNight +
+    temporalCoverage.score * WEIGHTS.temporalCoverage +
     bursts.score * WEIGHTS.bursts +
     engagement.score * WEIGHTS.engagement +
     longTerm.score * WEIGHTS.longTerm;
@@ -113,7 +117,7 @@ export function scoreEvents(
 
   const subScores: SubScores = {
     shortTermActivity: shortTerm.score,
-    usagePattern: weightedAverage([lateNight, bursts, engagement]),
+    usagePattern: weightedAverage([temporalCoverage, bursts, engagement]),
     longTermRetention: longTerm.score,
   };
 
@@ -155,6 +159,11 @@ function fmtUnix(sec: number | null): string {
   return new Date(sec * 1000).toISOString().replace("T", " ").slice(0, 16) + "Z";
 }
 
+/** リレー URL を短く（wss:// とパスを落としてホスト名だけ）表示する。 */
+function shortRelay(url: string): string {
+  return url.replace(/^wss?:\/\//, "").replace(/\/+$/, "");
+}
+
 /**
  * 取得メタ情報から「どこまで遡れたか・履歴が不完全かもしれない」を表す注意書きを作る。
  * リレーは完全性を保証しないため、自然終了（exhausted）でも「真の初投稿」とは
@@ -164,6 +173,17 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
   if (!meta) return [];
   const out: string[] = [];
   const oldest = fmtUnix(meta.oldestCreatedAt);
+
+  // 一部リレーが失敗しても全体は止めない（部分継続）。その事実を正直に出す。
+  if (meta.relaysFailed > 0) {
+    const failed = (meta.relayStats ?? [])
+      .filter((r) => r.status === "failed" || r.status === "timeout")
+      .map((r) => `${shortRelay(r.url)}(${r.status})`);
+    const detail = failed.length ? `: ${failed.join(" / ")}` : "";
+    out.push(
+      `${meta.relaysFailed} 個のリレーに接続できませんでした${detail}が、残り ${meta.relaysSucceeded} 個のリレーから取得を継続しました。失敗したリレーにしか無い投稿は観測できていない可能性があります。`,
+    );
+  }
 
   if (meta.reachedOldestAvailable) {
     out.push(
@@ -193,7 +213,7 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
   }
 
   out.push(
-    `取得はリレーの保持期間・件数・接続ポリシーに依存します（${meta.relaysQueried} リレー / ${meta.pagesFetched} ページ / ${Math.round(
+    `取得はリレーの保持期間・件数・接続ポリシーに依存します（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー / ${meta.pagesFetched} ページ / ${Math.round(
       meta.elapsedMs,
     )}ms）。観測できたのは活動の一部かもしれません。`,
   );
@@ -249,7 +269,7 @@ function emptyResult(
     observation,
     signals: [
       zero("shortTermActivity", "短期アクティブ度", "shortTerm", WEIGHTS.shortTerm),
-      zero("lateNight", "深夜投稿率", "pattern", WEIGHTS.lateNight),
+      zero("temporalCoverage", "常時稼働度", "pattern", WEIGHTS.temporalCoverage),
       zero("bursts", "連投傾向", "pattern", WEIGHTS.bursts),
       zero("engagement", "交流密度", "pattern", WEIGHTS.engagement),
       zero("longTermRetention", "長期継続・古参度", "longTerm", WEIGHTS.longTerm),

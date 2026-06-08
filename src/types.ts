@@ -36,6 +36,47 @@ export type FetchStopReason =
   | "error";
 
 /**
+ * 個別リレーの取得状態。
+ * 取得は **リレーごとに独立してページング** し、グローバルに重複排除する。
+ * 1 つのリレーが失敗・タイムアウトしても全体は止めず、応答するリレーから
+ * 取得を継続する。その「どのリレーがどこまで返したか」をここに正直に持つ。
+ */
+export type RelayStatus =
+  /** まだ問い合わせていない。 */
+  | "pending"
+  /** 問い合わせ中（非終端）。 */
+  | "querying"
+  /** 件数上限などで打ち切ったが、正常に応答していた。 */
+  | "ok"
+  /** これ以上古いイベントを返さなくなった（このリレーの保持限界まで遡れた）。 */
+  | "exhausted"
+  /** このリレーには対象の投稿が 1 件も無かった。 */
+  | "empty"
+  /** 接続・取得エラー（このリレーは使えなかった）。 */
+  | "failed"
+  /** タイムアウト／中断。 */
+  | "timeout"
+  /** 最古が過去へ進まず打ち切り（until を無視した等）。 */
+  | "noProgress"
+  /** ページ数上限に達した。 */
+  | "maxPages";
+
+export interface RelayStat {
+  /** リレー URL。 */
+  url: string;
+  /** 取得状態。 */
+  status: RelayStatus;
+  /** このリレーが返したイベント件数（グローバル重複排除の前）。 */
+  events: number;
+  /** このリレーに投げたページ数。 */
+  pages: number;
+  /** このリレーで遡れた最古 created_at（UNIX 秒）。null は未到達。 */
+  oldestReached: number | null;
+  /** 失敗時のエラー内容（任意）。 */
+  error?: string;
+}
+
+/**
  * 取得（バックワード・ページング）のメタ情報。
  * 「どこまで遡れたか」「履歴を掘り切れたか」を正直に表現するための中核データ。
  * リレーは保持期間・件数を保証しないため、reachedOldestAvailable でも
@@ -61,6 +102,12 @@ export interface HistoryMeta {
   newestCreatedAt: number | null;
   /** 問い合わせたリレー数（概算）。 */
   relaysQueried: number;
+  /** データを返した（接続できた）リレー数。 */
+  relaysSucceeded: number;
+  /** 失敗／タイムアウトしたリレー数。1 つ以上でも残りで取得は継続する。 */
+  relaysFailed: number;
+  /** リレー個別の取得結果（部分継続の可視化用）。 */
+  relayStats: RelayStat[];
   /** 取得に要した時間（ms）。 */
   elapsedMs: number;
   /** 件数上限に当たったか。 */
@@ -93,7 +140,7 @@ export interface AnalyzedEvent {
 /**
  * シグナルの所属軸。
  *  - shortTerm : 短期アクティブ度（観測ウィンドウ内の密度・稼働日率）。
- *  - pattern   : 生活・利用パターン（深夜・連投・交流）。
+ *  - pattern   : 生活・利用パターン（常時稼働度・連投・交流）。
  *  - longTerm  : 長期継続・古参度（観測ウィンドウが十分なときのみ高くなる）。
  */
 export type SignalCategory = "shortTerm" | "pattern" | "longTerm";
@@ -140,7 +187,7 @@ export interface ObservationInfo {
 export interface SubScores {
   /** 短期アクティブ度：観測ウィンドウ内の密度・稼働日率（直近の活発さ）。 */
   shortTermActivity: number;
-  /** 生活・利用パターン：深夜・連投・交流の複合。 */
+  /** 生活・利用パターン：常時稼働度・連投・交流の複合。 */
   usagePattern: number;
   /** 長期継続・古参度：信頼度で割引済み（低信頼なら低く出る）。 */
   longTermRetention: number;
@@ -189,8 +236,4 @@ export interface ScoringConfig {
   tzOffsetHours: number;
   /** タイムゾーン表示名。 */
   timezoneLabel: string;
-  /** 深夜帯とみなす開始時刻（含む）。 */
-  lateNightStart: number;
-  /** 深夜帯とみなす終了時刻（含まない）。 */
-  lateNightEnd: number;
 }

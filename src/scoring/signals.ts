@@ -11,7 +11,6 @@
 import type {
   AnalyzedEvent,
   ObservationInfo,
-  ScoringConfig,
   SignalScore,
 } from "../types.js";
 
@@ -138,32 +137,75 @@ export function shortTermActivitySignal(
   };
 }
 
-/** 2) 深夜投稿率: 深夜帯の投稿割合。 */
-export function lateNightSignal(
+/**
+ * 2) 常時稼働度（稼働時間帯の広さ）: 1 日 24 時間のうち、どれだけ広い時間帯に
+ *    投稿しているか＝「いつ見ても居る」度合い。
+ *
+ * 旧版は「深夜が多い＝廃人」という粗い基準だったが、夜型/朝型といった単なる
+ * 生活リズムの違いを廃人度と取り違えやすかった。本シグナルはこれを作り直し、
+ * **時間帯の広さ（breadth）・昼夜の分散（day/night distribution）・時刻分布の
+ * 均一さ（always-on-ness）** を測る。深夜だけ・夕方だけに偏っているユーザーより、
+ * 一日中まんべんなく投稿しているユーザーを高く評価する。
+ *
+ * 3 つの観点を合成する（いずれも 0-1）:
+ *  - coverage : 投稿のあった distinct な時間帯数 / 24（時間帯の広さ）。
+ *  - quadrant : 6 時間ごと 4 区分（深夜/午前/午後/夜）のうち活動した区分数 / 4
+ *               （昼夜まんべんなく＝always-on の近似）。
+ *  - evenness : 時刻ヒストグラムの正規化シャノンエントロピー（分布の均一さ）。
+ */
+export function temporalCoverageSignal(
   events: AnalyzedEvent[],
-  config: ScoringConfig,
   weight: number,
 ): SignalScore {
-  const { lateNightStart, lateNightEnd } = config;
-  const lateCount = events.filter(
-    (e) => e.hourLocal >= lateNightStart && e.hourLocal < lateNightEnd,
-  ).length;
-  const ratio = events.length ? lateCount / events.length : 0;
-  // 投稿の 30% が深夜帯なら 100 点。
-  const score = clamp((ratio / 0.3) * 100);
+  const total = events.length;
+  const counts = new Array<number>(24).fill(0);
+  for (const e of events) counts[e.hourLocal]++;
+
+  const distinctHours = counts.filter((c) => c > 0).length;
+  const coverage = distinctHours / 24;
+
+  // 6 時間ごと 4 区分（0-5 深夜 / 6-11 午前 / 12-17 午後 / 18-23 夜）。
+  const quadrants = [0, 0, 0, 0];
+  counts.forEach((c, h) => {
+    if (c > 0) quadrants[Math.floor(h / 6)] = 1;
+  });
+  const quadrantCoverage = quadrants.reduce((a, b) => a + b, 0) / 4;
+
+  // 正規化シャノンエントロピー（0=1 時間帯に集中, 1=24 時間帯に完全均一）。
+  let entropy = 0;
+  if (total > 0) {
+    for (const c of counts) {
+      if (c <= 0) continue;
+      const p = c / total;
+      entropy -= p * Math.log2(p);
+    }
+  }
+  const evenness = entropy / Math.log2(24);
+
+  // 広さ重視で合成（深夜偏重を優遇しない）。広い時間帯＋昼夜分散＋均一さ。
+  const score = clamp(
+    100 * (0.5 * coverage + 0.3 * quadrantCoverage + 0.2 * evenness),
+  );
+
   return {
-    key: "lateNight",
-    label: "深夜投稿率",
+    key: "temporalCoverage",
+    label: "常時稼働度",
     category: "pattern",
     score: round1(score),
     weight,
-    reason: `${config.timezoneLabel} ${lateNightStart}-${lateNightEnd}時の投稿が ${lateCount} 件（全体の ${Math.round(
-      ratio * 100,
-    )}%）。`,
+    reason: `24 時間中 ${distinctHours} 時間帯に投稿（カバレッジ ${Math.round(
+      coverage * 100,
+    )}%）、昼夜 4 区分のうち ${quadrants.reduce(
+      (a, b) => a + b,
+      0,
+    )} 区分で活動、時刻分布の均一さ ${Math.round(
+      evenness * 100,
+    )}%。特定の時間帯に偏らず「いつ見ても居る」ほど高くなります。`,
     detail: {
-      lateCount,
-      ratioPct: Math.round(ratio * 100),
-      window: `${lateNightStart}-${lateNightEnd}`,
+      distinctHours,
+      coveragePct: Math.round(coverage * 100),
+      quadrantsActive: quadrants.reduce((a, b) => a + b, 0),
+      evennessPct: Math.round(evenness * 100),
     },
   };
 }

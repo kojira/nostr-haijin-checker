@@ -63,8 +63,12 @@ export function formatReport(result: ScoreResult): string {
     const dug = h.historyComplete
       ? `${c.green}リレーが返す限界まで到達${c.reset}`
       : `${c.yellow}掘り切れず（${h.stopReason}）${c.reset}`;
+    const relayPart =
+      h.relaysFailed > 0
+        ? `リレー ${h.relaysSucceeded}/${h.relaysQueried} 応答 ${c.yellow}(失敗 ${h.relaysFailed})${c.reset}`
+        : `リレー ${h.relaysSucceeded}/${h.relaysQueried} 応答`;
     lines.push(
-      `${c.dim}取得:${c.reset} ${h.pagesFetched} ページ / ${h.relaysQueried} リレー / ${h.elapsedMs}ms ・ 履歴 ${dug}`,
+      `${c.dim}取得:${c.reset} ${h.pagesFetched} ページ / ${relayPart} / ${h.elapsedMs}ms ・ 履歴 ${dug}`,
     );
   }
   lines.push("");

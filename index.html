@@ -77,44 +77,30 @@
         <p id="status" class="status" role="status" aria-live="polite"></p>
       </form>
 
-      <section id="result" class="result" hidden></section>
+      <!-- 取得中のライブ進捗（リレー応答数・取得件数・遡れた最古など）をここに表示する。 -->
+      <section id="progress" class="card progress" role="status" aria-live="polite" hidden></section>
 
-      <section class="card notice">
-        <h2>ブラウザ直アクセスの制約</h2>
-        <ul>
-          <li>
-            このページは HTTPS で配信されるため、リレーは
-            <code>wss://</code>（暗号化）のみ利用できます。<code>ws://</code> は
-            ブラウザの Mixed Content ポリシーでブロックされます。
-          </li>
-          <li>
-            リレーの接続ポリシーや一時的な障害により、一部リレーに接続できず
-            観測範囲が狭まることがあります（スコアは観測できた範囲の近似値です）。
-          </li>
-          <li>
-            取得は <code>nostr-fetch</code> で<strong>過去へページング</strong>し、
-            リレーが返す限り初投稿へ向けて遡ります。ただし保持期間・件数はリレー依存で、
-            古い投稿は破棄されていることがあります。結果には「どこまで遡れたか・履歴を
-            掘り切れたか」を明示します（掘り切れない場合は長期評価が過小になり得ます）。
-          </li>
-          <li>
-            観測できた期間（観測ウィンドウ）が短い場合、「長期継続・古参度」は
-            <strong>評価を保留</strong>します（low-confidence）。短い観測から長期の
-            継続を断定することはしません。表示の「観測信頼度」を目安にしてください。
-          </li>
-          <li>
-            これは娯楽・自己診断目的の MVP であり、依存度の医学的判定ではありません。
-          </li>
-        </ul>
-      </section>
+      <section id="result" class="result" hidden></section>
 
       <footer class="footer">
         <p>
-          採点ロジックは CLI 版と共通（<code>src/scoring/</code>）。
-          ソース・詳細は
+          採点ロジックは CLI 版と共通（<code>src/scoring/</code>）。一部リレーが落ちても
+          残りのリレーから取得を継続します。ソース・詳細は
           <a href="https://github.com/" id="repo-link" rel="noopener">リポジトリ</a>
           を参照してください。
         </p>
+        <details class="fineprint">
+          <summary>補足・留意点</summary>
+          <ul>
+            <li>採点はすべてブラウザ内で完結します（サーバー不要）。</li>
+            <li>
+              観測できるのはリレーが返す範囲だけです。観測ウィンドウが短いときは
+              「長期継続・古参度」を主張せず low-confidence として明示します。
+            </li>
+            <li>HTTPS 配信のため、リレーは <code>wss://</code> のみ利用できます。</li>
+            <li>娯楽・自己診断目的の MVP です（医学的判定ではありません）。</li>
+          </ul>
+        </details>
       </footer>
     </main>
 

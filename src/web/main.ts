@@ -6,11 +6,16 @@
  * 採点・npub 変換・ランクは CLI とまったく同じモジュールを再利用する。
  */
 import "./style.css";
-import { fetchUserEvents } from "../nostr/fetch.browser.js";
+import { fetchUserEvents, type FetchProgress } from "../nostr/fetch.browser.js";
 import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
-import type { ScoreResult, ScoringConfig, SignalScore } from "../types.js";
+import type {
+  RelayStat,
+  ScoreResult,
+  ScoringConfig,
+  SignalScore,
+} from "../types.js";
 
 /**
  * NIP-07 で拡張機能が `window.nostr` に注入する API（必要分だけ型付け）。
@@ -41,6 +46,7 @@ const timeoutInput = $<HTMLInputElement>("timeout");
 const submitBtn = $<HTMLButtonElement>("submit");
 const nip07Btn = $<HTMLButtonElement>("nip07");
 const statusEl = $<HTMLParagraphElement>("status");
+const progressEl = $<HTMLElement>("progress");
 const resultEl = $<HTMLElement>("result");
 
 // 既定リレーを textarea に流し込む（wss:// のみ）。
@@ -130,6 +136,8 @@ nip07Btn.addEventListener("click", async () => {
 async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   resultEl.hidden = true;
   resultEl.innerHTML = "";
+  progressEl.hidden = true;
+  progressEl.innerHTML = "";
 
   const relays = parseRelays(relaysInput.value);
   if (relays.length === 0) {
@@ -163,7 +171,7 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
 
   setBusy(
     true,
-    `リレーへ問い合わせ中... 過去へページング (${relays.length} relays, page-size ${pageSize}, max-pages ${maxPages})`,
+    `リレーへ問い合わせ中... 各リレーを過去へページング（${relays.length} relays, page-size ${pageSize}, max-pages ${maxPages}）。`,
   );
 
   try {
@@ -172,6 +180,8 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       pageSize,
       maxPages,
       timeoutMs,
+      // 取得の途中経過をライブ表示する（リレー応答数・件数・遡れた最古など）。
+      onProgress: (p) => renderProgress(p),
     });
     const result = scoreEvents(
       npub,
@@ -185,9 +195,11 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     const dug = meta.historyComplete
       ? "リレーが返す限界まで到達"
       : `掘り切れず（${meta.stopReason}）`;
+    const failPart =
+      meta.relaysFailed > 0 ? `・失敗 ${meta.relaysFailed} リレー` : "";
     setBusy(
       false,
-      `完了: ${result.sampleSize} 件を採点（${meta.pagesFetched} ページ・履歴 ${dug}）。`,
+      `完了: ${result.sampleSize} 件を採点（応答 ${meta.relaysSucceeded}/${meta.relaysQueried} リレー${failPart}・${meta.pagesFetched} ページ・履歴 ${dug}）。`,
     );
   } catch (err) {
     console.error(err);
@@ -195,6 +207,60 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       `取得中にエラーが発生しました: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** リレー状態 → 表示ラベル＆装飾クラス。 */
+const RELAY_STATUS_VIEW: Record<RelayStat["status"], { label: string; cls: string }> = {
+  pending: { label: "待機", cls: "rs-pending" },
+  querying: { label: "取得中…", cls: "rs-active" },
+  ok: { label: "完了", cls: "rs-ok" },
+  exhausted: { label: "遡り切り", cls: "rs-ok" },
+  empty: { label: "投稿なし", cls: "rs-empty" },
+  noProgress: { label: "打ち切り", cls: "rs-ok" },
+  maxPages: { label: "ページ上限", cls: "rs-ok" },
+  failed: { label: "接続失敗", cls: "rs-fail" },
+  timeout: { label: "時間切れ", cls: "rs-fail" },
+};
+
+/**
+ * 取得の途中経過パネルを描画する。取得中も完了後も同じ関数で更新する。
+ * 「いま何件・どのリレーがどこまで・どこまで遡れたか」を数値で見せる。
+ */
+function renderProgress(p: FetchProgress): void {
+  progressEl.hidden = false;
+  const done = p.phase === "done";
+  const oldest = fmtDate(p.oldestReached);
+  const elapsed = (p.elapsedMs / 1000).toFixed(1);
+
+  const relayRows = p.relays
+    .map((r) => {
+      const view = RELAY_STATUS_VIEW[r.status];
+      const meta =
+        r.events > 0 ? `${r.events} 件 / ${r.pages} ページ` : `${r.pages} ページ`;
+      return `<li class="relay-item ${view.cls}">
+        <span class="relay-host">${escapeHtml(shortRelay(r.url))}</span>
+        <span class="relay-status">${escapeHtml(view.label)}</span>
+        <span class="relay-meta">${escapeHtml(meta)}</span>
+      </li>`;
+    })
+    .join("");
+
+  progressEl.innerHTML = `
+    <h2 class="progress-title">${done ? "取得完了" : "リレーから取得中…"}</h2>
+    <div class="progress-grid">
+      <div class="pg-cell"><span class="pg-num">${p.collectedUnique}</span><span class="pg-lbl">取得イベント</span></div>
+      <div class="pg-cell"><span class="pg-num">${p.relaysSucceeded}/${p.relaysTotal}</span><span class="pg-lbl">応答リレー</span></div>
+      <div class="pg-cell"><span class="pg-num${p.relaysFailed > 0 ? " pg-warn" : ""}">${p.relaysFailed}</span><span class="pg-lbl">失敗リレー</span></div>
+      <div class="pg-cell"><span class="pg-num">${p.pagesFetched}</span><span class="pg-lbl">取得ページ</span></div>
+    </div>
+    <p class="pg-oldest">ここまで遡れた最古: <b>${escapeHtml(oldest)}</b> ・ 経過 ${elapsed}s ・ 完了 ${p.relaysCompleted}/${p.relaysTotal} リレー</p>
+    <ul class="relay-list">${relayRows}</ul>
+  `;
+}
+
+/** リレー URL を短く（ホスト名相当）表示する。 */
+function shortRelay(url: string): string {
+  return url.replace(/^wss?:\/\//, "").replace(/\/+$/, "");
 }
 
 function clampNum(n: number, min: number, max: number, fallback: number): number {
@@ -268,7 +334,7 @@ function renderResult(r: ScoreResult): void {
     ),
   );
   axesCard.appendChild(
-    axisRow("利用パターン", "深夜・連投・交流の複合（生活リズム）", r.subScores.usagePattern),
+    axisRow("利用パターン", "常時稼働度（時間帯の広さ）・連投・交流の複合", r.subScores.usagePattern),
   );
   resultEl.appendChild(axesCard);
 

@@ -30,22 +30,48 @@ function jst(dayIndex: number, hour: number, minute = 0): number {
   return BASE + dayIndex * 86400 + (hour - 9) * 3600 + minute * 60;
 }
 
-test("廃人プロファイル: 毎日・深夜・連投・交流が多いと高スコア", () => {
+test("廃人プロファイル: 毎日・一日中まんべんなく・連投・交流が多いと高スコア", () => {
   const events: NostrEvent[] = [];
-  // 30日間、毎日 深夜2時台に8連投 + 昼にリプライ/リアクション
+  // 昼夜にまたがる時間帯（常時稼働度を高くする）。
+  const spreadHours = [0, 2, 5, 7, 9, 11, 13, 15, 17, 19, 21, 22];
   for (let d = 0; d < 30; d++) {
-    for (let b = 0; b < 8; b++) {
-      events.push(ev(jst(d, 2, b))); // 1分間隔の連投（深夜）
-    }
-    events.push(ev(jst(d, 13), 1, [["e", "someid"]])); // リプライ
-    events.push(ev(jst(d, 14), 7)); // リアクション
-    events.push(ev(jst(d, 15), 6)); // リポスト
+    // 深夜帯に 8 連投（バースト）
+    for (let b = 0; b < 8; b++) events.push(ev(jst(d, 3, b)));
+    // 一日中まんべんなく単発投稿（時間帯カバレッジ）
+    for (const h of spreadHours) events.push(ev(jst(d, h)));
+    // 交流（リプライ/リアクション/リポスト）
+    events.push(ev(jst(d, 14), 1, [["e", "someid"]]));
+    events.push(ev(jst(d, 16), 7));
+    events.push(ev(jst(d, 20), 6));
   }
   const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG);
   assert.ok(r.totalScore >= 70, `期待: >=70, 実際: ${r.totalScore}`);
   assert.equal(r.signals.length, 5);
   // 各シグナルに必ず根拠がある
   for (const s of r.signals) assert.ok(s.reason.length > 0);
+  // 常時稼働度（時間帯の広さ）が高く出る。
+  const tc = r.signals.find((s) => s.key === "temporalCoverage");
+  assert.ok(tc && tc.score >= 60, `常時稼働度が低すぎ: ${tc?.score}`);
+});
+
+test("常時稼働度: 同じ件数でも『一日中』が『特定時間帯に集中』を上回る", () => {
+  // A) 24 時間にまんべんなく（毎日、各時刻 1 件ずつ）。
+  const allDay: NostrEvent[] = [];
+  for (let d = 0; d < 10; d++)
+    for (let h = 0; h < 24; h++) allDay.push(ev(jst(d, h)));
+  // B) 同じ総数だが深夜 0-3 時だけに集中。
+  const nightOnly: NostrEvent[] = [];
+  for (let d = 0; d < 10; d++)
+    for (let i = 0; i < 24; i++) nightOnly.push(ev(jst(d, i % 4, i)));
+
+  const a = scoreEvents(NPUB, HEX, allDay, DEFAULT_CONFIG);
+  const b = scoreEvents(NPUB, HEX, nightOnly, DEFAULT_CONFIG);
+  const ta = a.signals.find((s) => s.key === "temporalCoverage")!.score;
+  const tb = b.signals.find((s) => s.key === "temporalCoverage")!.score;
+
+  // 旧「深夜が多い＝廃人」とは逆: 終日まんべんなく投稿する方を高く評価する。
+  assert.ok(ta > tb, `常時稼働度が逆転: allDay=${ta} nightOnly=${tb}`);
+  assert.ok(ta >= 90, `終日投稿の常時稼働度が低い: ${ta}`);
 });
 
 test("ライトユーザー: たまに昼に1件だと低スコア", () => {

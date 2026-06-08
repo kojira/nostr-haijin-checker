@@ -38,6 +38,9 @@ function meta(overrides: Partial<HistoryMeta>): HistoryMeta {
     oldestCreatedAt: BASE,
     newestCreatedAt: BASE + 86400,
     relaysQueried: 3,
+    relaysSucceeded: 3,
+    relaysFailed: 0,
+    relayStats: [],
     elapsedMs: 1234,
     hitEventCap: false,
     hitPageCap: false,
@@ -118,6 +121,29 @@ test("scoreEvents: fetchMeta 省略時は history=null・履歴系 notes は出�
   const r = scoreEvents(NPUB, HEX, events);
   assert.equal(r.history, null);
   assert.ok(!r.notes.some((n) => n.includes("掘り切れていません")));
+});
+
+test("historyNotes: 一部リレー失敗でも『残りで継続した』ことを明示する", () => {
+  const notes = historyNotes(
+    meta({
+      stopReason: "exhausted",
+      reachedOldestAvailable: true,
+      historyComplete: true,
+      relaysQueried: 3,
+      relaysSucceeded: 2,
+      relaysFailed: 1,
+      relayStats: [
+        { url: "wss://ok1.example", status: "exhausted", events: 10, pages: 2, oldestReached: BASE },
+        { url: "wss://ok2.example", status: "exhausted", events: 5, pages: 1, oldestReached: BASE },
+        { url: "wss://dead.example", status: "failed", events: 0, pages: 0, oldestReached: null, error: "boom" },
+      ],
+    }),
+  );
+  // 失敗が 1 件あっても残りで継続したことを正直に出す。
+  assert.ok(notes.some((n) => n.includes("取得を継続しました")));
+  assert.ok(notes.some((n) => n.includes("dead.example")));
+  // 失敗していないときは継続メッセージを出さない。
+  assert.ok(!historyNotes(meta({})).some((n) => n.includes("取得を継続しました")));
 });
 
 test("scoreEvents: 0件でも fetchMeta は history に保持される", () => {
