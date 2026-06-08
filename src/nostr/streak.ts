@@ -57,8 +57,9 @@ export interface StreakLookupOptions {
   /** ローカル日（実稼働日）判定の UTC オフセット（時間）。既定 9（JST）。 */
   tzOffsetHours?: number;
   /**
-   * 遡る最大日数の内部安全上限（=プローブ往復の上限・暴走防止）。既定 1000。
-   * ユーザー向けには公開されない内部/テスト専用のノブ。通常は既定のまま辿れるだけ辿る。
+   * 遡る最大日数の上限（=プローブ往復の上限）。テスト/任意の安全ノブ専用。
+   * 未指定なら **無制限**（上限なし）で、リレーが返す限り辿れるだけ辿る。
+   * 通常経路（CLI/Web）では渡さないため、ストリークはリレーの限界まで掘り進む。
    */
   maxDays?: number;
   /** 基準時刻（UNIX秒）。「今日」の判定とカーソル起点。既定は実時刻。テストで固定可。 */
@@ -79,7 +80,6 @@ export interface StreakLookupOptions {
 }
 
 const DEFAULTS = {
-  maxDays: 1000,
   probeTimeoutMs: 10000,
   overallTimeoutMs: 60000,
 } as const;
@@ -95,7 +95,8 @@ export async function lookupStreak(
   opts: StreakLookupOptions,
 ): Promise<StreakInfo> {
   const tz = Number.isFinite(opts.tzOffsetHours) ? (opts.tzOffsetHours as number) : 9;
-  const maxDays = clampPositive(opts.maxDays, DEFAULTS.maxDays);
+  // 未指定なら無制限（Infinity）。指定時のみテスト/任意の安全ノブとして上限になる。
+  const maxDays = opts.maxDays != null ? clampPositive(opts.maxDays, Infinity) : Infinity;
   const probeTimeoutMs = clampPositive(opts.probeTimeoutMs, DEFAULTS.probeTimeoutMs);
   const overallTimeoutMs = Math.max(
     0,
@@ -136,7 +137,7 @@ export async function lookupStreak(
 
   try {
     while (scanned < maxDays) {
-      if (Date.now() >= deadline) break; // 安全上限。endedNaturally のまま false → truncated。
+      if (Date.now() >= deadline) break; // 時間切れ。endedNaturally のまま false → truncated。
       scanned++;
 
       let ev: NostrEvent | undefined;
@@ -173,7 +174,7 @@ export async function lookupStreak(
     fetcher.shutdown?.();
   }
 
-  // 自然終端でなく上限/期限/エラーで止めたなら、実際の連続日数はもっと長い可能性がある。
+  // 自然終端でなく期限/エラー/任意の上限で止めたなら、実際の連続日数はもっと長い可能性がある。
   const truncated = !endedNaturally && streak > 0;
 
   const daysSinceLastActive = lastActiveDi == null ? null : todayIndex - lastActiveDi;

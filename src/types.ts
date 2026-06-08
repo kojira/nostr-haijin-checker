@@ -270,8 +270,9 @@ export interface StreakInfo {
   /** 走査した日数（= 軽量プローブの往復回数の目安）。 */
   daysScanned: number;
   /**
-   * 上限（maxDays）・期限（overallTimeout）・プローブ失敗で打ち切ったか。
-   * true のときは実際の連続日数はさらに長い可能性がある（掘り切れていない）。
+   * 自然終端ではない理由で打ち切ったか＝期限（overallTimeout）・プローブ失敗・
+   * テスト/任意の上限（maxDays）。内部に焼き込んだ日数の天井は無い。
+   * true のときは実際の連続日数はさらに長い可能性がある（下限として扱う）。
    */
   truncated: boolean;
   /** 問い合わせたリレー数（概算）。 */

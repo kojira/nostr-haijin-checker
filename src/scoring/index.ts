@@ -323,7 +323,7 @@ export function streakNotes(streak: StreakInfo | null): string[] {
   );
   if (streak.truncated) {
     out.push(
-      `ストリークは内部の安全上限（走査日数 / 時間）またはプローブ失敗で途中まで（${streak.daysScanned} 日走査）しか辿れませんでした。` +
+      `ストリークはタイムアウト（時間上限）またはプローブ失敗で途中まで（${streak.daysScanned} 日走査）しか辿れませんでした。` +
         "実際の連続日数はさらに長い可能性があります（表示値・加点はいずれも下限として控えめに扱います）。",
     );
   }

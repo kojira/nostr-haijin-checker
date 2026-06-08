@@ -82,7 +82,7 @@ export function formatReport(result: ScoreResult): string {
       const state = s.ongoing
         ? `${c.green}継続中${c.reset}`
         : `${c.yellow}途切れ（${s.daysSinceLastActive ?? "?"}日前）${c.reset}`;
-      const more = s.truncated ? `${c.yellow}（上限到達: さらに長い可能性）${c.reset}` : "";
+      const more = s.truncated ? `${c.yellow}（途中打ち切り: さらに長い可能性）${c.reset}` : "";
       body =
         `${c.bold}${s.currentStreakDays}${c.reset} 日 ${state}` +
         ` ・ 最新実稼働 ${s.lastActiveDay ?? "-"}${more ? " " + more : ""}`;

@@ -473,7 +473,7 @@ export function longTermRetentionSignal(
  * **直接プローブで確認済み**だから）。総合スコアでは modest な固定重み（WEIGHTS.streak）
  * で重み付き平均に参加する。
  *
- * truncated（上限/期限/プローブ失敗で打ち切り）のとき、`currentStreakDays` は
+ * truncated（期限/プローブ失敗/任意の上限で途中打ち切り）のとき、`currentStreakDays` は
  * 「実際の連続日数の下限」である。saturating は単調増加なので、この下限から得た
  * スコアは過大主張ではなく **控えめな下限**として扱える（真の値はこれ以上）。
  * したがって既知の長いストリークは高く出つつ、正確な天井は断定しない（reason に「≥」と明示）。
@@ -494,7 +494,7 @@ export function streakRetentionSignal(
         ? "継続中"
         : `${streak.daysSinceLastActive}日前に途切れ`;
   const trunc = streak.truncated
-    ? "（上限到達: 実際の連続日数はこれ以上＝下限として控えめに加点）"
+    ? "（途中打ち切り: 実際の連続日数はこれ以上＝下限として控えめに加点）"
     : "";
   const reason =
     days === 0

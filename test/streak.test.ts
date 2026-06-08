@@ -10,7 +10,7 @@
  *  1) 連続する実稼働日を数える（最新実稼働日が今日 → ongoing=true）。
  *  2) ギャップ（実稼働の無い日）でストリークが終端する。
  *  3) 最新実稼働日が古ければ ongoing=false（途切れ済み）。
- *  4) maxDays の安全上限で打ち切ると truncated=true（実際はもっと長い可能性）。
+ *  4) 任意の maxDays（テスト/安全ノブ）で打ち切ると truncated=true（実際はもっと長い可能性）。
  *  5) 活動が一切無ければ streak=0・lastActiveDay=null。
  *  6) 1 実稼働日あたりプローブ往復はちょうど 1 回（混雑日でも全件は取らない）。
  */
@@ -109,8 +109,8 @@ test("最新実稼働日が古ければ ongoing=false（途切れ済み）", asy
   assert.equal(s.ongoing, false);
 });
 
-test("maxDays の安全上限で打ち切ると truncated=true", async () => {
-  // 11 日連続で活動。maxDays=3 で 3 日ぶんだけ数えて打ち切る。
+test("maxDays（任意の安全ノブ）で打ち切ると truncated=true", async () => {
+  // 11 日連続で活動。maxDays=3 で 3 日ぶんだけ数えて打ち切る（既定ではなく明示指定時のみ）。
   const events: NostrEvent[] = [];
   for (let i = 0; i <= 10; i++) events.push(ev(noonOf(TODAY - i)));
   const f = fakeFetcher(events);
@@ -124,6 +124,29 @@ test("maxDays の安全上限で打ち切ると truncated=true", async () => {
   assert.equal(s.daysScanned, 3);
   assert.equal(s.truncated, true); // 自然終端ではないので「もっと長い可能性」
   assert.equal(s.ongoing, true);
+});
+
+test("maxDays 未指定なら 1000 日超の長いストリークも自然終端まで全部辿る（truncated=false）", async () => {
+  // 1234 日連続で活動し、その先（1235 日前以前）は一切無し＝自然終端。
+  // 旧実装には maxDays=1000 の内部既定があり 1000 日で打ち切られていた。
+  // その既定が消えたことを、1000 を超える全長を数え切ること＋truncated=false で証明する。
+  const STREAK_LEN = 1234;
+  const events: NostrEvent[] = [];
+  for (let i = 0; i < STREAK_LEN; i++) events.push(ev(noonOf(TODAY - i)));
+  const f = fakeFetcher(events);
+  const s = await lookupStreak(HEX, {
+    relays: ["wss://r1"],
+    nowUnix: NOW,
+    fetcher: f, // maxDays は渡さない → 無制限
+  });
+  // 1000 を超える全長を最後まで辿れている。
+  assert.equal(s.currentStreakDays, STREAK_LEN);
+  assert.ok(s.currentStreakDays > 1000, "1000 日の内部既定上限が残っていると失敗する");
+  // それ以上古いイベントが無く自然終端した＝打ち切りではない。
+  assert.equal(s.truncated, false);
+  assert.equal(s.ongoing, true); // 最新実稼働は今日
+  // STREAK_LEN 実稼働日 + 終端確認の 1 プローブ（過去に無し）＝ STREAK_LEN + 1 往復。
+  assert.equal(f.calls.length, STREAK_LEN + 1);
 });
 
 test("活動が一切無ければ streak=0・lastActiveDay=null", async () => {
