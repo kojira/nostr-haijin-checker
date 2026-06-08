@@ -345,6 +345,32 @@ textarea {
   background: #1c1810;
 }
 
+/* ── 投稿用テキスト ── */
+.share-text {
+  width: 100%;
+  resize: vertical;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.share-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.share-actions .btn {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.share-msg {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+}
+
 .footer {
   color: var(--fg-dim);
   font-size: 0.8rem;

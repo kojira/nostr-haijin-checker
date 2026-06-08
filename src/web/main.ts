@@ -14,6 +14,7 @@ import {
 import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
+import { buildShareText } from "../scoring/shareText.js";
 import {
   ANALYSIS_STAGE_LABELS,
   WORKFLOW_PHASE_LABELS,
@@ -563,8 +564,85 @@ function renderResult(r: ScoreResult): void {
     resultEl.appendChild(notes);
   }
 
+  // ── 投稿用テキスト ── そのまま Nostr / SNS に貼れる共有文をコピー可能な形で出す。
+  resultEl.appendChild(shareCard(r));
+
   resultEl.hidden = false;
   resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/**
+ * 投稿用テキストのカード。整形済みテキストを編集可能な textarea で見せ、
+ * 「投稿テキストをコピー」ボタンでクリップボードへ送る。
+ * Clipboard API が使えない環境では選択コピーへ穏当にフォールバックする。
+ */
+function shareCard(r: ScoreResult): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card share-card";
+
+  const h = document.createElement("h2");
+  h.textContent = "投稿用テキスト";
+  card.appendChild(h);
+
+  const text = buildShareText(r);
+
+  const ta = document.createElement("textarea");
+  ta.className = "share-text";
+  ta.readOnly = true;
+  ta.rows = text.split("\n").length + 1;
+  ta.value = text;
+  card.appendChild(ta);
+
+  const actions = document.createElement("div");
+  actions.className = "share-actions";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn";
+  btn.textContent = "投稿テキストをコピー";
+
+  const msg = document.createElement("span");
+  msg.className = "share-msg";
+  msg.setAttribute("role", "status");
+  msg.setAttribute("aria-live", "polite");
+
+  btn.addEventListener("click", () => {
+    void copyShareText(text, ta, msg);
+  });
+
+  actions.appendChild(btn);
+  actions.appendChild(msg);
+  card.appendChild(actions);
+
+  return card;
+}
+
+/**
+ * テキストをクリップボードへコピーする。Clipboard API を優先し、
+ * 使えない／拒否された場合は textarea の選択 + execCommand へフォールバックする。
+ * 成否は msg 要素に短く表示する。
+ */
+async function copyShareText(
+  text: string,
+  ta: HTMLTextAreaElement,
+  msg: HTMLElement,
+): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      msg.textContent = "コピーしました ✓";
+      return;
+    }
+    throw new Error("clipboard API unavailable");
+  } catch {
+    // フォールバック: textarea を選択して execCommand("copy") を試す。
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand?.("copy") ?? false;
+    msg.textContent = ok
+      ? "コピーしました ✓"
+      : "コピーできませんでした。上のテキストを選択してコピーしてください。";
+  }
 }
 
 function axisRow(

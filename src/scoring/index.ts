@@ -33,6 +33,13 @@ import {
 } from "./signals.js";
 import { rankForScore } from "./rank.js";
 
+// 共有テキスト整形（CLI・Web から再利用できる純関数）を再エクスポートする。
+export {
+  buildShareText,
+  DEFAULT_SHARE_HASHTAG,
+  type ShareTextOptions,
+} from "./shareText.js";
+
 /** デフォルトのスコアリング設定（JST）。 */
 export const DEFAULT_CONFIG: ScoringConfig = {
   tzOffsetHours: 9,
