@@ -205,13 +205,9 @@ npm run dev -- <npub>
 `src/nostr/relays.ts` で定義。`--relays` で上書き可能です。
 
 ```
-wss://relay.damus.io
-wss://nos.lol
 wss://yabu.me               (日本語ユーザーが多い)
-wss://relay.nostr.wirednet.jp
 wss://r.kojira.io
 wss://x.kojira.io
-wss://relay-jp.nostr.wirednet.jp
 ```
 
 ---
