@@ -6,7 +6,9 @@
 export const DEFAULT_RELAYS: string[] = [
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://relay.nostr.band",
   "wss://yabu.me", // 日本語ユーザーが多いリレー
   "wss://relay.nostr.wirednet.jp",
+  "wss://r.kojira.io",
+  "wss://x.kojira.io",
+  "wss://relay-jp.nostr.wirednet.jp",
 ];
