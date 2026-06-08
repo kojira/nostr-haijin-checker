@@ -14,6 +14,7 @@ import type {
   ScoringConfig,
   SignalCategory,
   SignalScore,
+  StreakInfo,
   SubScores,
 } from "../types.js";
 import { prepareEvents } from "./prepare.js";
@@ -54,6 +55,10 @@ export const WEIGHTS = {
  * @param fetchMeta 取得（バックワード・ページング）のメタ情報。どこまで遡れたか・
  *            履歴を掘り切れたかを注意書き（notes）に反映する。取得経路を介さない
  *            （直接イベント配列を渡す）場合は null。
+ * @param streak ストリーク（連続実稼働日数）の軽量ルックアップ結果。heavy fetch とは
+ *            **別経路**で日次の活動有無だけを掘った結果。総合スコアには影響させず、
+ *            結果（result.streak）と注意書きにのみ反映する。ストリーク経路を介さない
+ *            場合は null。
  */
 export function scoreEvents(
   npub: string,
@@ -62,6 +67,7 @@ export function scoreEvents(
   config: ScoringConfig = DEFAULT_CONFIG,
   now: number = Math.floor(Date.now() / 1000),
   fetchMeta: HistoryMeta | null = null,
+  streak: StreakInfo | null = null,
 ): ScoreResult {
   const notes: string[] = [];
 
@@ -70,7 +76,8 @@ export function scoreEvents(
       "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-windows / --relay-timeout / --window-timeout を増やす・--since を緩めてみてください。",
     );
     for (const n of historyNotes(fetchMeta)) notes.push(n);
-    return emptyResult(npub, pubkeyHex, config, notes, fetchMeta);
+    for (const n of streakNotes(streak)) notes.push(n);
+    return emptyResult(npub, pubkeyHex, config, notes, fetchMeta, streak);
   }
 
   const events = prepareEvents(rawEvents, config);
@@ -135,6 +142,8 @@ export function scoreEvents(
   }
   // 取得（ページング）の実情を正直に反映する。掘り切れたか／途中で打ち切ったか。
   for (const n of historyNotes(fetchMeta)) notes.push(n);
+  // ストリーク（連続実稼働日数）は heavy fetch とは別経路の独立指標。注意書きにのみ反映。
+  for (const n of streakNotes(streak)) notes.push(n);
 
   return {
     npub,
@@ -149,6 +158,7 @@ export function scoreEvents(
     windowEnd: end,
     timezone: config.timezoneLabel,
     history: fetchMeta,
+    streak,
     notes,
   };
 }
@@ -214,6 +224,43 @@ export function historyNotes(meta: HistoryMeta | null): string[] {
   return out;
 }
 
+/**
+ * ストリーク（連続実稼働日数）の軽量ルックアップ結果から注意書きを作る。
+ *
+ * ストリークは heavy fetch（全件取得）とは **別経路**で、日ごとに「その日に投稿が
+ * 1 件でもあるか」だけを軽量プローブで遡って数えた独立指標である。全履歴の網羅取得
+ * ではないこと・総合スコアには影響しないことを、利用者が誤解しないよう明示する。
+ */
+export function streakNotes(streak: StreakInfo | null): string[] {
+  if (!streak) return [];
+  const out: string[] = [];
+
+  if (streak.currentStreakDays === 0) {
+    out.push(
+      "連続実稼働日数（ストリーク）は 0 日です（最新の実稼働日が見つからない、または直近に活動がありません）。" +
+        "ストリークは全件取得とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを軽量に確認して数えます（全履歴の網羅取得ではありません）。",
+    );
+    return out;
+  }
+
+  const last = streak.lastActiveDay ?? "-";
+  const status = streak.ongoing
+    ? "現在も継続中"
+    : `${streak.daysSinceLastActive ?? "?"} 日前に途切れています`;
+  out.push(
+    `連続実稼働日数（ストリーク）: ${streak.currentStreakDays} 日（最新の実稼働日 ${last} / ${status}）。` +
+      "これは全件取得（総合スコアの入力）とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを" +
+      "軽量プローブで遡って数えたものです（全履歴の網羅取得ではなく、総合スコアには影響しません）。",
+  );
+  if (streak.truncated) {
+    out.push(
+      `ストリークは安全上限（走査日数 / 時間）またはプローブ失敗で打ち切られました（${streak.daysScanned} 日走査）。` +
+        "実際の連続日数はさらに長い可能性があります。--streak-max-days を増やすと、より過去まで数えられることがあります。",
+    );
+  }
+  return out;
+}
+
 /** シグナル群の重み付き平均（表示用サブスコア）。 */
 function weightedAverage(signals: SignalScore[]): number {
   const w = signals.reduce((s, x) => s + x.weight, 0);
@@ -228,6 +275,7 @@ function emptyResult(
   config: ScoringConfig,
   notes: string[],
   fetchMeta: HistoryMeta | null = null,
+  streak: StreakInfo | null = null,
 ): ScoreResult {
   const zero = (
     key: string,
@@ -273,6 +321,7 @@ function emptyResult(
     windowEnd: null,
     timezone: config.timezoneLabel,
     history: fetchMeta,
+    streak,
     notes,
   };
 }

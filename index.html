@@ -82,6 +82,21 @@
                 <input id="overallTimeout" name="overallTimeout" type="number" min="0" max="1800000" step="10000" value="0" />
               </label>
             </div>
+            <p class="hint">
+              <strong>連続実稼働日数（ストリーク）</strong>は全件取得とは<strong>別経路</strong>です。
+              日ごとに最新 1 件だけを遡り「その日に投稿が 1 件でもあるか」で実稼働日を判定します
+              （全履歴の網羅取得ではなく、総合スコアには影響しません）。
+            </p>
+            <div class="field-row">
+              <label class="field field-check">
+                <input id="streakEnabled" name="streakEnabled" type="checkbox" checked />
+                <span class="field-label">連続実稼働日数（ストリーク）を計測する</span>
+              </label>
+              <label class="field">
+                <span class="field-label">ストリーク最大遡及日数</span>
+                <input id="streakMaxDays" name="streakMaxDays" type="number" min="1" max="100000" value="1000" />
+              </label>
+            </div>
           </div>
         </details>
 

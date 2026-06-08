@@ -71,6 +71,25 @@ export function formatReport(result: ScoreResult): string {
       `${c.dim}取得:${c.reset} ${h.pagesFetched} ページ / ${relayPart} / ${h.elapsedMs}ms ・ 履歴 ${dug}`,
     );
   }
+  // ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ結果。独立指標。
+  if (result.streak) {
+    const s = result.streak;
+    let body: string;
+    if (s.currentStreakDays === 0) {
+      body = `${c.dim}活動なし（直近に実稼働日が見つかりません）${c.reset}`;
+    } else {
+      const state = s.ongoing
+        ? `${c.green}継続中${c.reset}`
+        : `${c.yellow}途切れ（${s.daysSinceLastActive ?? "?"}日前）${c.reset}`;
+      const more = s.truncated ? `${c.yellow}（上限到達: さらに長い可能性）${c.reset}` : "";
+      body =
+        `${c.bold}${s.currentStreakDays}${c.reset} 日 ${state}` +
+        ` ・ 最新実稼働 ${s.lastActiveDay ?? "-"}${more ? " " + more : ""}`;
+    }
+    lines.push(
+      `${c.dim}連続実稼働(別経路):${c.reset} ${body} ${c.dim}※日ごとに1件以上の有無で判定（全件取得とは独立）${c.reset}`,
+    );
+  }
   lines.push("");
 
   // ── 3 軸を分離して提示（短期 / 長期 / 総合） ──

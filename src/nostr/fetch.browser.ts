@@ -14,6 +14,7 @@
  *    （HistoryMeta に「掘り切れていない」旨が反映される）。
  */
 import { queryUserEvents } from "./query.js";
+import { lookupStreak } from "./streak.js";
 
 export type {
   FetchOptions,
@@ -21,9 +22,17 @@ export type {
   FetchProgress,
   ProgressCallback,
 } from "./query.js";
+export type { StreakLookupOptions } from "./streak.js";
 
 /**
  * 指定 pubkey(hex) のイベントを複数リレーから取得する（ブラウザ用）。
  * 実体は環境非依存の queryUserEvents（query.ts）。WebSocket 注入は不要。
  */
 export const fetchUserEvents = queryUserEvents;
+
+/**
+ * 連続実稼働日数（ストリーク）を軽量プローブで数える（ブラウザ用）。
+ * heavy fetch とは **別経路**。実体は環境非依存の lookupStreak。
+ * ブラウザはネイティブ WebSocket を使うため注入は不要。
+ */
+export const lookupUserStreak = lookupStreak;

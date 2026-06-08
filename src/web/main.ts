@@ -6,7 +6,11 @@
  * 採点・npub 変換・ランクは CLI とまったく同じモジュールを再利用する。
  */
 import "./style.css";
-import { fetchUserEvents, type FetchProgress } from "../nostr/fetch.browser.js";
+import {
+  fetchUserEvents,
+  lookupUserStreak,
+  type FetchProgress,
+} from "../nostr/fetch.browser.js";
 import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
@@ -15,6 +19,7 @@ import type {
   ScoreResult,
   ScoringConfig,
   SignalScore,
+  StreakInfo,
 } from "../types.js";
 
 /**
@@ -45,6 +50,8 @@ const tzInput = $<HTMLInputElement>("tz");
 const windowTimeoutInput = $<HTMLInputElement>("windowTimeout");
 const relayTimeoutInput = $<HTMLInputElement>("relayTimeout");
 const overallTimeoutInput = $<HTMLInputElement>("overallTimeout");
+const streakEnabledInput = $<HTMLInputElement>("streakEnabled");
+const streakMaxDaysInput = $<HTMLInputElement>("streakMaxDays");
 const submitBtn = $<HTMLButtonElement>("submit");
 const nip07Btn = $<HTMLButtonElement>("nip07");
 const statusEl = $<HTMLParagraphElement>("status");
@@ -162,6 +169,9 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   // 全体安全上限は 0=無効を許す（min を 0 にする）。
   const overallTimeoutMs = clampNum(Number(overallTimeoutInput.value), 0, 1800000, 0);
   const tz = clampNum(Number(tzInput.value), -12, 14, 9);
+  // ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ。
+  const streakEnabled = streakEnabledInput.checked;
+  const streakMaxDays = clampNum(Number(streakMaxDaysInput.value), 1, 100000, 1000);
 
   const config: ScoringConfig = {
     ...DEFAULT_CONFIG,
@@ -191,13 +201,35 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       // 取得の途中経過をライブ表示する（リレー応答数・件数・遡れた最古など）。
       onProgress: (p) => renderProgress(p),
     });
+
+    // ── ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ ──
+    // 日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。総合スコアには
+    // 影響させず、表示用の独立指標として持ち帰る。失敗しても採点本体は止めない。
+    const nowSec = Math.floor(Date.now() / 1000);
+    let streak: StreakInfo | null = null;
+    if (streakEnabled) {
+      setBusy(true, "連続実稼働日数（ストリーク）を軽量ルックアップ中… 全件取得とは別経路で日ごとに最新 1 件だけを遡ります。");
+      try {
+        streak = await lookupUserStreak(pubkeyHex, {
+          relays,
+          tzOffsetHours: tz,
+          maxDays: streakMaxDays,
+          nowUnix: nowSec,
+        });
+      } catch (err) {
+        // ストリークは独立指標。失敗しても採点は継続（streak=null のまま）。
+        console.warn("streak lookup failed:", err);
+      }
+    }
+
     const result = scoreEvents(
       npub,
       pubkeyHex,
       events,
       config,
-      Math.floor(Date.now() / 1000),
+      nowSec,
       meta,
+      streak,
     );
     renderResult(result);
     const dug = meta.historyComplete
@@ -292,6 +324,28 @@ function historyLineHtml(r: ScoreResult): string {
   )}</span><br />`;
 }
 
+/**
+ * ストリーク（連続実稼働日数）を 1 行で表す。全件取得とは別経路の独立指標であることを
+ * 利用者が誤解しないよう、「日ごとの有無で判定」である旨を併記する。
+ */
+function streakLineHtml(s: StreakInfo | null): string {
+  if (!s) return "";
+  let body: string;
+  if (s.currentStreakDays === 0) {
+    body = "活動なし（直近に実稼働日が見つかりません）";
+  } else {
+    const state = s.ongoing
+      ? "継続中"
+      : `途切れ（${s.daysSinceLastActive ?? "?"}日前）`;
+    const more = s.truncated ? " ・ 上限到達（さらに長い可能性）" : "";
+    body = `<b>${s.currentStreakDays}</b> 日（${escapeHtml(state)}）・ 最新実稼働 ${escapeHtml(
+      s.lastActiveDay ?? "-",
+    )}${escapeHtml(more)}`;
+  }
+  const cls = s.ongoing ? "streak-line streak-on" : "streak-line";
+  return `<span class="${cls}">連続実稼働（別経路）: ${body} <span class="streak-note">※日ごとに1件以上の有無で判定（全件取得とは独立）</span></span><br />`;
+}
+
 function renderResult(r: ScoreResult): void {
   resultEl.innerHTML = "";
 
@@ -315,6 +369,7 @@ function renderResult(r: ScoreResult): void {
         obs.confidence * 100,
       )}%<br />
       ${historyLineHtml(r)}
+      ${streakLineHtml(r.streak)}
       <span class="npub-line">${escapeHtml(r.npub)}</span>
     </p>
   `;

@@ -196,6 +196,36 @@ export interface Rank {
   description: string;
 }
 
+/**
+ * ストリーク（連続実稼働日数）の軽量ルックアップ結果。
+ *
+ * heavy fetch（HistoryMeta＝全件取得）とは **別経路**で、日単位に「その日に投稿が
+ * 1 件でもあるか」だけを安く・深く確認して数えた結果を表す。全件取得には依存せず、
+ * heavy fetch が遡れる範囲より遠くまで（cheap に）遡れることがある。
+ * 総合スコア（totalScore）には一切影響しない、表示用の独立指標。
+ */
+export interface StreakInfo {
+  /** 連続実稼働日数（最新の実稼働日から、途切れずに遡れた日数）。 */
+  currentStreakDays: number;
+  /** 最新の実稼働日（ローカル日）の "YYYY-MM-DD"。活動が無ければ null。 */
+  lastActiveDay: string | null;
+  /** 最新実稼働日が「今日」から何日前か（0=今日, 1=昨日…）。活動が無ければ null。 */
+  daysSinceLastActive: number | null;
+  /** ストリークが今も継続中か（最新実稼働日が今日 or 昨日なら true）。 */
+  ongoing: boolean;
+  /** 走査した日数（= 軽量プローブの往復回数の目安）。 */
+  daysScanned: number;
+  /**
+   * 上限（maxDays）・期限（overallTimeout）・プローブ失敗で打ち切ったか。
+   * true のときは実際の連続日数はさらに長い可能性がある（掘り切れていない）。
+   */
+  truncated: boolean;
+  /** 問い合わせたリレー数（概算）。 */
+  relaysQueried: number;
+  /** ルックアップに要した時間（ms）。 */
+  elapsedMs: number;
+}
+
 /** スコアリング全体の最終結果。 */
 export interface ScoreResult {
   npub: string;
@@ -220,6 +250,11 @@ export interface ScoreResult {
    * どこまで遡れたか・履歴を掘り切れたかを表す。取得経路を介さない場合は null。
    */
   history: HistoryMeta | null;
+  /**
+   * ストリーク（連続実稼働日数）の軽量ルックアップ結果。heavy fetch とは別経路で
+   * 日次の活動有無だけを掘る。ストリーク経路を介さない場合は null。
+   */
+  streak: StreakInfo | null;
   /** 観測の限界に関する注意書き。 */
   notes: string[];
 }

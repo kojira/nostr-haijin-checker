@@ -384,6 +384,20 @@ code {
   color: var(--error);
 }
 
+/* 連続実稼働日数（ストリーク）— 全件取得とは別経路の独立指標。 */
+.streak-line {
+  color: var(--accent-2);
+}
+
+.streak-line.streak-on {
+  color: var(--ok, var(--accent-2));
+}
+
+.streak-line .streak-note {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+
 /* ---- 取得ライブ進捗パネル ---- */
 .progress-title {
   margin: 0 0 14px;

@@ -9,12 +9,16 @@
  * 取得(nostr/)・採点(scoring/) のロジックは独立モジュールに分離している。
  */
 import { Command } from "commander";
-import { fetchUserEvents, type FetchProgress } from "./nostr/fetch.js";
+import {
+  fetchUserEvents,
+  lookupUserStreak,
+  type FetchProgress,
+} from "./nostr/fetch.js";
 import { DEFAULT_RELAYS } from "./nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "./nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "./scoring/index.js";
 import { formatReport } from "./report.js";
-import type { ScoringConfig } from "./types.js";
+import type { ScoringConfig, StreakInfo } from "./types.js";
 
 const program = new Command();
 
@@ -78,6 +82,20 @@ program
     "--timeout <ms>",
     "[非推奨] 旧グローバルタイムアウト。--overall-timeout（安全上限）の別名として解釈される",
   )
+  .option(
+    "--no-streak",
+    "連続実稼働日数（ストリーク）の軽量ルックアップを行わない",
+  )
+  .option(
+    "--streak-max-days <n>",
+    "ストリークで遡る最大日数（= 軽量プローブ往復の安全上限）。全件取得とは別経路",
+    "1000",
+  )
+  .option(
+    "--streak-overall-timeout <ms>",
+    "ストリーク走査全体の安全上限（ミリ秒・0 で無効）。全件取得とは独立",
+    "60000",
+  )
   .option("--json", "JSON で出力（プログラム連携用）", false)
   .addHelpText(
     "after",
@@ -89,6 +107,14 @@ program
   1 日に多数投稿しても件数境界で取りこぼしにくくなります。
   --since（既定 2021-01-01）まで全ウィンドウを覆うか、--max-windows / --max-events /
   リレー単位のタイムアウト上限まで遡ります。掘り切れたか否かは結果に明示されます。
+
+ストリーク（連続実稼働日数）— 全件取得とは別経路:
+  総合スコアの採点には「全イベント」が要るため全 kind の全イベントを掘りますが、
+  ストリーク（連続実稼働日数）の判定に必要なのは「その日に投稿が 1 件でもあるか」だけです。
+  そこでストリークは**全件取得とは独立した軽量プローブ**で、日ごとに最新 1 件だけを
+  遡って「実稼働日」を数えます（混雑日でも全件は取らないので、全件取得より遠くまで安く
+  遡れます）。総合スコアには一切影響しない**表示用の独立指標**です。
+  --no-streak で無効化、--streak-max-days で遡る最大日数を調整できます。
 
 タイムアウト設計（グローバルではなくリクエスト／リレー単位）:
   取得は各リレーを独立に処理します。タイムアウトは責務ごとに分割され、
@@ -121,6 +147,9 @@ const opts = program.opts<{
   relayTimeout: string;
   overallTimeout: string;
   timeout?: string;
+  streak: boolean;
+  streakMaxDays: string;
+  streakOverallTimeout: string;
   json: boolean;
 }>();
 
@@ -198,13 +227,45 @@ async function main(): Promise<void> {
     process.stderr.write("\n");
   }
 
+  // ── ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ ──
+  // 全件取得とは独立に、日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。
+  // 総合スコアには影響させず、表示用の独立指標として持ち帰る。--no-streak で無効化。
+  const nowSec = Math.floor(Date.now() / 1000);
+  let streak: StreakInfo | null = null;
+  if (opts.streak) {
+    if (!opts.json) {
+      process.stderr.write(
+        "連続実稼働日数（ストリーク）を軽量ルックアップ中... 全件取得とは別経路で日ごとに最新 1 件だけを遡ります。\n",
+      );
+    }
+    try {
+      streak = await lookupUserStreak(pubkeyHex, {
+        relays,
+        tzOffsetHours: config.tzOffsetHours,
+        maxDays: Number(opts.streakMaxDays),
+        nowUnix: nowSec,
+        overallTimeoutMs: Number(opts.streakOverallTimeout),
+      });
+    } catch (err) {
+      // ストリークは独立指標。失敗しても採点本体は止めない（streak=null のまま）。
+      if (!opts.json) {
+        process.stderr.write(
+          `ストリークのルックアップに失敗しました（採点は継続します）: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+  }
+
   const result = scoreEvents(
     npub,
     pubkeyHex,
     events,
     config,
-    Math.floor(Date.now() / 1000),
+    nowSec,
     meta,
+    streak,
   );
 
   if (opts.json) {
