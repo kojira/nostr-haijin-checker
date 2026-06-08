@@ -12,6 +12,19 @@ import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
 import type { ScoreResult, ScoringConfig, SignalScore } from "../types.js";
 
+/**
+ * NIP-07 で拡張機能が `window.nostr` に注入する API（必要分だけ型付け）。
+ * 採点には公開鍵だけ使うので `getPublicKey()` のみ参照する。
+ */
+interface Nip07 {
+  getPublicKey(): Promise<string>;
+}
+declare global {
+  interface Window {
+    nostr?: Nip07;
+  }
+}
+
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`element not found: #${id}`);
@@ -25,6 +38,7 @@ const limitInput = $<HTMLInputElement>("limit");
 const tzInput = $<HTMLInputElement>("tz");
 const timeoutInput = $<HTMLInputElement>("timeout");
 const submitBtn = $<HTMLButtonElement>("submit");
+const nip07Btn = $<HTMLButtonElement>("nip07");
 const statusEl = $<HTMLParagraphElement>("status");
 const resultEl = $<HTMLElement>("result");
 
@@ -38,12 +52,14 @@ if (npubParam) npubInput.value = npubParam.trim();
 
 function setBusy(busy: boolean, message = ""): void {
   submitBtn.disabled = busy;
+  nip07Btn.disabled = busy;
   statusEl.textContent = message;
   statusEl.classList.toggle("error", false);
 }
 
 function setError(message: string): void {
   submitBtn.disabled = false;
+  nip07Btn.disabled = false;
   statusEl.textContent = message;
   statusEl.classList.add("error");
 }
@@ -57,8 +73,6 @@ function parseRelays(raw: string): string[] {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  resultEl.hidden = true;
-  resultEl.innerHTML = "";
 
   const npubRaw = npubInput.value.trim();
   if (!npubRaw) {
@@ -79,6 +93,42 @@ form.addEventListener("submit", async (e) => {
     }
     return;
   }
+
+  await runCheck(pubkeyHex, npub);
+});
+
+// NIP-07: ブラウザ拡張（window.nostr）から公開鍵を取得して、手入力なしで採点する。
+nip07Btn.addEventListener("click", async () => {
+  if (!window.nostr || typeof window.nostr.getPublicKey !== "function") {
+    setError(
+      "NIP-07 対応の拡張機能（nos2x / Alby など）が見つかりません。導入後に再度お試しいただくか、npub を直接入力してください。",
+    );
+    return;
+  }
+
+  setBusy(true, "拡張機能から公開鍵を取得中...");
+
+  let pubkeyHex: string;
+  let npub: string;
+  try {
+    pubkeyHex = toPubkeyHex(await window.nostr.getPublicKey());
+    npub = toNpub(pubkeyHex);
+  } catch (err) {
+    setError(
+      `NIP-07 での公開鍵取得に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  // 取得した npub を入力欄にも反映しておく（再採点・共有 URL のため）。
+  npubInput.value = npub;
+  await runCheck(pubkeyHex, npub);
+});
+
+// 公開鍵が確定したあとの共通フロー（手入力 / NIP-07 の両方から呼ばれる）。
+async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
+  resultEl.hidden = true;
+  resultEl.innerHTML = "";
 
   const relays = parseRelays(relaysInput.value);
   if (relays.length === 0) {
@@ -126,7 +176,7 @@ form.addEventListener("submit", async (e) => {
       `取得中にエラーが発生しました: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-});
+}
 
 function clampNum(n: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;

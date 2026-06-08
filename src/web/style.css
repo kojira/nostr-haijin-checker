@@ -133,6 +133,18 @@ textarea {
   cursor: progress;
 }
 
+.btn-secondary {
+  margin-top: 10px;
+  background: var(--bg-elev);
+  border: 1px solid #2f3540;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
 .status {
   min-height: 1.4em;
   margin: 12px 0 0;
