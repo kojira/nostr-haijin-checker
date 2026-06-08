@@ -101,15 +101,17 @@ program
     "after",
     `
 取得方針:
-  nostr-fetch を基盤に、authors のみ（全 kind）でリレーへ問い合わせ、
-  [since, until] を**適応的なタイムウィンドウ（since/until）**に区切って取得します。
+  nostr-fetch を基盤に、authors と許可した kind（プロフィール・投稿・リポスト・
+  リアクション・公開チャンネル・DM 関連: 0,1,4,6,7,40,41,42,43,44,13,14,1059）で
+  リレーへ問い合わせ、[since, until] を**適応的なタイムウィンドウ（since/until）**に
+  区切って取得します。署名検証は行わず、リレーが返したイベントを信頼します。
   密なウィンドウ（>= --dense-threshold 件）は中点で再帰分割して掘り直すため、
   1 日に多数投稿しても件数境界で取りこぼしにくくなります。
   --since（既定 2021-01-01）まで全ウィンドウを覆うか、--max-windows / --max-events /
   リレー単位のタイムアウト上限まで遡ります。掘り切れたか否かは結果に明示されます。
 
 ストリーク（連続実稼働日数）— 全件取得とは別経路:
-  総合スコアの採点には「全イベント」が要るため全 kind の全イベントを掘りますが、
+  総合スコアの採点には「全イベント」が要るため許可した kind の全イベントを掘りますが、
   ストリーク（連続実稼働日数）の判定に必要なのは「その日に投稿が 1 件でもあるか」だけです。
   そこでストリークは**全件取得とは独立した軽量プローブ**で、日ごとに最新 1 件だけを
   遡って「実稼働日」を数えます（混雑日でも全件は取らないので、全件取得より遠くまで安く
@@ -203,7 +205,7 @@ async function main(): Promise<void> {
 
   if (!opts.json) {
     console.error(
-      `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, initial-window ${opts.initialWindow}s, dense-threshold ${opts.denseThreshold}）。1 つ落ちても残りで継続します。`,
+      `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, initial-window ${opts.initialWindow}s, dense-threshold ${opts.denseThreshold}）。`,
     );
   }
 

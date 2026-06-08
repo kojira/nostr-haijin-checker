@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lookupStreak, type StreakFetcher } from "../src/nostr/streak.js";
+import { ALLOWED_KINDS } from "../src/kinds.js";
 import type { NostrEvent } from "../src/types.js";
 
 const HEX = "00".repeat(32);
@@ -135,6 +136,23 @@ test("活動が一切無ければ streak=0・lastActiveDay=null", async () => {
   assert.equal(s.truncated, false);
   // 1 回プローブして「過去に無し」を確認したら終わり。
   assert.equal(f.calls.length, 1);
+});
+
+test("既定で許可リスト（ALLOWED_KINDS）の kind だけで実稼働日を判定する", async () => {
+  let seenKinds: number[] | undefined;
+  const f: StreakFetcher = {
+    async fetchLastEvent(_relays, filter) {
+      seenKinds = filter.kinds as number[] | undefined;
+      return undefined;
+    },
+    shutdown() {},
+  };
+  await lookupStreak(HEX, { relays: ["wss://r1"], nowUnix: NOW, fetcher: f });
+  const sortNum = (a: number[]): number[] => [...a].sort((x, y) => x - y);
+  assert.ok(seenKinds, "kinds 指定なしでプローブしている（全 kind になってしまう）");
+  assert.deepEqual(sortNum(seenKinds!), sortNum(ALLOWED_KINDS));
+  // フォローリスト kind3 などは実稼働日の判定対象にしない。
+  assert.ok(!seenKinds!.includes(3), "許可外 kind3 がストリーク判定に含まれている");
 });
 
 test("relaysQueried はリレー数を反映する", async () => {

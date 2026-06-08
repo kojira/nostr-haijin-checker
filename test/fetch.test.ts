@@ -23,6 +23,7 @@ import {
   DEFAULT_SINCE,
   type MinimalFetcher,
 } from "../src/nostr/query.js";
+import { ALLOWED_KINDS } from "../src/kinds.js";
 import type { NostrEvent } from "../src/types.js";
 
 const HEX = "00".repeat(32);
@@ -72,6 +73,50 @@ test("疎な履歴: 分割せず全件返る・complete", async () => {
   assert.equal(meta.stopReason, "ok");
   assert.equal(meta.reachedOldestAvailable, true);
   assert.equal(meta.pagesFetched, 1);
+});
+
+test("既定で許可リスト（ALLOWED_KINDS）の kind だけをリレーへ問い合わせる", async () => {
+  const seen: (number[] | undefined)[] = [];
+  const f: MinimalFetcher = {
+    async fetchAllEvents(_relays, filter) {
+      seen.push(filter.kinds as number[] | undefined);
+      return [];
+    },
+    shutdown() {},
+  };
+  await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: DEFAULT_SINCE + 2592000,
+    sinceUnix: DEFAULT_SINCE,
+    fetcher: f,
+  });
+  assert.ok(seen.length >= 1, "問い合わせが発生していない");
+  const sortNum = (a: number[]): number[] => [...a].sort((x, y) => x - y);
+  for (const kinds of seen) {
+    assert.ok(kinds, "kinds 指定なしで問い合わせている（全 kind になってしまう）");
+    assert.deepEqual(sortNum(kinds!), sortNum(ALLOWED_KINDS));
+    // フォローリスト kind3 など許可外は含まない。
+    assert.ok(!kinds!.includes(3), "許可外 kind3 が問い合わせに含まれている");
+  }
+});
+
+test("kinds を明示指定すれば許可リストより優先される", async () => {
+  let seen: number[] | undefined;
+  const f: MinimalFetcher = {
+    async fetchAllEvents(_relays, filter) {
+      seen = filter.kinds as number[] | undefined;
+      return [];
+    },
+    shutdown() {},
+  };
+  await queryUserEvents(HEX, {
+    relays: ["wss://r1"],
+    untilUnix: DEFAULT_SINCE + 2592000,
+    sinceUnix: DEFAULT_SINCE,
+    kinds: [1],
+    fetcher: f,
+  });
+  assert.deepEqual(seen, [1]);
 });
 
 test("複数リレーで重複排除: 同一 id は 1 件", async () => {

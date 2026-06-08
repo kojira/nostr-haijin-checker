@@ -28,8 +28,11 @@
  *    CLI の進捗行に使う）。
  *
  * 重要な設計方針:
- *  - フィルタは **authors のみ**（kinds 指定なし）。kind1/6/7 に限定せず、
- *    すべての kind を取得する。継続性・稼働日の判定を全 kind で行うため。
+ *  - フィルタは **authors + 許可した kind**（`ALLOWED_KINDS`）。プロフィール・投稿・
+ *    リポスト・リアクション・公開チャンネル・DM 関連の kind だけを取得し、継続性・
+ *    稼働日の判定もこの範囲で行う（フォローリスト kind3 などは除外）。
+ *  - **署名検証は行わない**（`skipVerification`）。リレーが返したイベントをそのまま
+ *    信頼する（relay-trusted）。
  *  - リレーは保持期間・件数を保証しない。掘り切れたか否か（HistoryMeta）を
  *    正直に持ち帰り、上位（採点・表示）で「履歴が不完全かもしれない」と明示する。
  *  - **リレーの役割分割（長期用/短期用など）は行わない**。全リレーを同条件で扱う。
@@ -42,6 +45,7 @@
  * 依存を巻き込まない。
  */
 import { NostrFetcher, type FetchFilter } from "nostr-fetch";
+import { ALLOWED_KINDS } from "../kinds.js";
 import type { HistoryMeta, NostrEvent, RelayStat } from "../types.js";
 
 /** nostr-fetch に渡す WebSocket コンストラクタ（環境ごとに注入）。 */
@@ -64,6 +68,8 @@ export interface MinimalFetcher {
       signal?: AbortSignal;
       connectTimeoutMs?: number;
       limitPerReq?: number;
+      /** 署名検証を省く（relay-trusted）。 */
+      skipVerification?: boolean;
     },
   ): Promise<NostrEvent[]>;
   shutdown?: () => void;
@@ -141,7 +147,7 @@ export interface FetchOptions {
    * 一括停止する旧来のグローバル挙動には戻らない（安全上限としてのみ働く）。
    */
   timeoutMs?: number;
-  /** kind を絞りたいとき（既定は未指定＝全 kind）。 */
+  /** 取得する kind を上書きしたいとき（既定は `ALLOWED_KINDS`）。 */
   kinds?: number[];
   /** Node 環境用の WebSocket 実装注入（ブラウザでは不要）。 */
   webSocketConstructor?: WebSocketCtor;
@@ -248,9 +254,12 @@ export async function queryUserEvents(
   const since = opts.sinceUnix ?? DEFAULT_SINCE;
   const onProgress = opts.onProgress;
 
-  const filter: FetchFilter = opts.kinds
-    ? { authors: [pubkeyHex], kinds: opts.kinds }
-    : { authors: [pubkeyHex] };
+  // 既定は許可リスト（ALLOWED_KINDS）。プロフィール・投稿・リポスト・リアクション・
+  // 公開チャンネル・DM 関連だけを取得し、それ以外（フォローリスト等）は除外する。
+  const filter: FetchFilter = {
+    authors: [pubkeyHex],
+    kinds: opts.kinds ?? ALLOWED_KINDS,
+  };
 
   const fetcher: MinimalFetcher =
     opts.fetcher ??
@@ -375,6 +384,8 @@ export async function queryUserEvents(
             signal: winAc.signal,
             connectTimeoutMs: Math.min(timeoutMs, 5000),
             limitPerReq: 5000,
+            // 署名検証は行わない（リレーが返したイベントをそのまま信頼する）。
+            skipVerification: true,
           },
         ),
         timeout,

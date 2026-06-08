@@ -3,8 +3,8 @@
  *
  * なぜ heavy fetch（query.ts の適応的タイムウィンドウ取得）と経路を分けるのか:
  *  - 総合スコアの採点には「全イベント」が要る（密度・連投・交流・時間帯分布など、
- *    1 件単位の特徴を全部使う）。そのため query.ts は全 kind の全イベントを掘る
- *    **重い取得**を行う。
+ *    1 件単位の特徴を全部使う）。そのため query.ts は許可リスト（ALLOWED_KINDS）の
+ *    全イベントを掘る **重い取得**を行う。
  *  - 一方ストリークの判定に必要なのは **「その日に投稿が 1 件でもあるか」** だけ。
  *    全件を取る必要はない。日ごとに最新 1 件を確認できれば「実稼働日」は判定できる。
  *  - そこで本モジュールは **最新 1 件取得（fetchLastEvent, limit 1）を asOf カーソルで
@@ -23,6 +23,7 @@
  * 呼び出し側が webSocketConstructor に ws を注入）。本モジュールは ws を import しない。
  */
 import { NostrFetcher, type FetchFilter } from "nostr-fetch";
+import { ALLOWED_KINDS } from "../kinds.js";
 import type { NostrEvent, StreakInfo } from "../types.js";
 import type { WebSocketCtor } from "./query.js";
 
@@ -43,6 +44,8 @@ export interface StreakFetcher {
       signal?: AbortSignal;
       connectTimeoutMs?: number;
       limitPerReq?: number;
+      /** 署名検証を省く（relay-trusted）。 */
+      skipVerification?: boolean;
     },
   ): Promise<NostrEvent | undefined>;
   shutdown?: () => void;
@@ -60,7 +63,7 @@ export interface StreakLookupOptions {
   probeTimeoutMs?: number;
   /** 走査全体の安全上限（ms）。0 で無効。既定 60000。 */
   overallTimeoutMs?: number;
-  /** kind を絞りたいとき（既定は未指定＝全 kind）。 */
+  /** 実稼働日の判定に使う kind を上書きしたいとき（既定は `ALLOWED_KINDS`）。 */
   kinds?: number[];
   /** Node 環境用の WebSocket 実装注入（ブラウザでは不要）。 */
   webSocketConstructor?: WebSocketCtor;
@@ -96,9 +99,11 @@ export async function lookupStreak(
   );
   const now = opts.nowUnix ?? Math.floor(Date.now() / 1000);
 
-  const filter: FetchFilter = opts.kinds
-    ? { authors: [pubkeyHex], kinds: opts.kinds }
-    : { authors: [pubkeyHex] };
+  // 実稼働日は許可リスト（ALLOWED_KINDS）の kind があった日だけを数える。
+  const filter: FetchFilter = {
+    authors: [pubkeyHex],
+    kinds: opts.kinds ?? ALLOWED_KINDS,
+  };
 
   const fetcher: StreakFetcher =
     opts.fetcher ??
@@ -212,6 +217,8 @@ async function probeLastEvent(
         signal: ac.signal,
         connectTimeoutMs: Math.min(eff, 5000),
         limitPerReq: 1,
+        // 署名検証は行わない（リレーが返したイベントをそのまま信頼する）。
+        skipVerification: true,
       }),
       timeout,
     ]);

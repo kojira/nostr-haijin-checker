@@ -15,11 +15,7 @@
         <h1>Nostr 廃人度チェッカー <span aria-hidden="true">💀</span></h1>
         <p class="lead">
           <code>npub</code> を入力すると、複数リレーから公開投稿を取得して
-          <strong>短期アクティブ度</strong>・<strong>長期継続/古参度</strong>・
-          <strong>総合廃人スコア</strong>を<strong>別軸</strong>で表示します。
-          観測ウィンドウが短いときは「長期継続」を主張せず、観測不足
-          (low-confidence) として明示します。採点はすべてあなたのブラウザ内で
-          完結します（サーバー不要）。
+          <strong>総合廃人スコア</strong>を採点します。
         </p>
       </header>
 
@@ -44,9 +40,7 @@
               <textarea id="relays" name="relays" rows="5" spellcheck="false"></textarea>
             </label>
             <p class="hint">
-              <code>npub</code> の全 kind を<strong>時間ウィンドウ（since/until）</strong>で
-              区切って取得し、投稿が密な期間はウィンドウを分割して掘り直します。深く掘るほど
-              時間がかかります。
+              対象 kind を時間ウィンドウで区切って取得します。深く掘るほど時間がかかります。
             </p>
             <div class="field-row">
               <label class="field">
@@ -69,8 +63,7 @@
               </label>
             </div>
             <p class="hint">
-              タイムアウトは<strong>グローバル（全体一括停止）ではなくリクエスト／リレー単位</strong>です。
-              あるリレー（またはウィンドウ）が時間切れになっても、<strong>他のリレーは取得を続行</strong>します。
+              タイムアウトはリレー／リクエスト単位です。
             </p>
             <div class="field-row">
               <label class="field">
@@ -83,9 +76,7 @@
               </label>
             </div>
             <p class="hint">
-              <strong>連続実稼働日数（ストリーク）</strong>は全件取得とは<strong>別経路</strong>です。
-              日ごとに最新 1 件だけを遡り「その日に投稿が 1 件でもあるか」で実稼働日を判定します
-              （全履歴の網羅取得ではなく、総合スコアには影響しません）。
+              連続実稼働日数（ストリーク）は別経路で計測し、総合スコアには影響しません。
             </p>
             <div class="field-row">
               <label class="field field-check">
@@ -114,23 +105,10 @@
 
       <footer class="footer">
         <p>
-          採点ロジックは CLI 版と共通（<code>src/scoring/</code>）。一部リレーが落ちても
-          残りのリレーから取得を継続します。ソース・詳細は
+          娯楽・自己診断目的の MVP です。ソース・詳細は
           <a href="https://github.com/" id="repo-link" rel="noopener">リポジトリ</a>
           を参照してください。
         </p>
-        <details class="fineprint">
-          <summary>補足・留意点</summary>
-          <ul>
-            <li>採点はすべてブラウザ内で完結します（サーバー不要）。</li>
-            <li>
-              観測できるのはリレーが返す範囲だけです。観測ウィンドウが短いときは
-              「長期継続・古参度」を主張せず low-confidence として明示します。
-            </li>
-            <li>HTTPS 配信のため、リレーは <code>wss://</code> のみ利用できます。</li>
-            <li>娯楽・自己診断目的の MVP です（医学的判定ではありません）。</li>
-          </ul>
-        </details>
       </footer>
     </main>
 

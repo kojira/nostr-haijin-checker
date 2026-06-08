@@ -154,15 +154,28 @@ test("scoreEvents: 0件でも fetchMeta は history に保持される", () => {
   assert.ok(r.notes.length > 0);
 });
 
-test("全 kind を稼働日・継続に算入: kind1 以外だけの日も実稼働日に数える", () => {
-  // 3 日それぞれ別 kind（1=ノート, 7=リアクション, 3=フォロー）でのみ活動。
+test("許可 kind を稼働日・継続に算入: kind1 以外（許可 kind）だけの日も実稼働日に数える", () => {
+  // 3 日それぞれ別の許可 kind（1=ノート, 7=リアクション, 6=リポスト）でのみ活動。
   const events: NostrEvent[] = [
     ev(BASE + 0 * 86400, 1),
     ev(BASE + 1 * 86400, 7),
+    ev(BASE + 2 * 86400, 6),
+  ];
+  const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, BASE + 3 * 86400);
+  // 許可リストの全イベントから稼働日を数えるので 3 日。
+  assert.equal(r.observation.observedActiveDays, 3);
+  assert.equal(r.sampleSize, 3);
+});
+
+test("許可外 kind（kind3 など）は稼働日に算入しない", () => {
+  // kind1 の 1 日と、kind3（フォローリスト・許可外）だけの 2 日。
+  const events: NostrEvent[] = [
+    ev(BASE + 0 * 86400, 1),
+    ev(BASE + 1 * 86400, 3),
     ev(BASE + 2 * 86400, 3),
   ];
   const r = scoreEvents(NPUB, HEX, events, DEFAULT_CONFIG, BASE + 3 * 86400);
-  // kind を限定せず全イベントから稼働日を数えるので 3 日。
-  assert.equal(r.observation.observedActiveDays, 3);
-  assert.equal(r.sampleSize, 3);
+  // kind3 は除外され、許可 kind の 1 日だけが実稼働日。
+  assert.equal(r.observation.observedActiveDays, 1);
+  assert.equal(r.sampleSize, 1);
 });

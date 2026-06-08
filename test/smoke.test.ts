@@ -95,6 +95,26 @@ test("廃人 > ライト の順序が保たれる", () => {
   assert.ok(hr.totalScore > lr.totalScore);
 });
 
+test("許可外 kind（フォロー kind3 など）は採点入力から除外される", () => {
+  // kind3 だけの日々は実稼働日に数えない（許可リスト外なので空データ相当になる）。
+  const onlyKind3: NostrEvent[] = [];
+  for (let d = 0; d < 10; d++) onlyKind3.push(ev(jst(d, 12), 3));
+  const r = scoreEvents(NPUB, HEX, onlyKind3, DEFAULT_CONFIG, jst(10, 12));
+  assert.equal(r.sampleSize, 0, "kind3 が採点に算入されている");
+  assert.equal(r.totalScore, 0);
+
+  // 許可 kind を混ぜれば許可分だけ算入される（kind3 は捨てられる）。
+  const mixed: NostrEvent[] = [
+    ev(jst(0, 12), 1), // 算入
+    ev(jst(0, 13), 3), // 除外
+    ev(jst(1, 12), 7), // 算入
+    ev(jst(1, 13), 3), // 除外
+  ];
+  const rm = scoreEvents(NPUB, HEX, mixed, DEFAULT_CONFIG, jst(2, 12));
+  assert.equal(rm.sampleSize, 2, "許可外 kind3 が採点に混ざっている");
+  assert.equal(rm.observation.observedActiveDays, 2);
+});
+
 test("空データ: スコア0・ランクは休眠・注意書きあり", () => {
   const r = scoreEvents(NPUB, HEX, []);
   assert.equal(r.totalScore, 0);

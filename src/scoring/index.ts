@@ -17,6 +17,7 @@ import type {
   StreakInfo,
   SubScores,
 } from "../types.js";
+import { isAllowedKind } from "../kinds.js";
 import { prepareEvents } from "./prepare.js";
 import {
   burstSignal,
@@ -63,13 +64,18 @@ export const WEIGHTS = {
 export function scoreEvents(
   npub: string,
   pubkeyHex: string,
-  rawEvents: NostrEvent[],
+  inputEvents: NostrEvent[],
   config: ScoringConfig = DEFAULT_CONFIG,
   now: number = Math.floor(Date.now() / 1000),
   fetchMeta: HistoryMeta | null = null,
   streak: StreakInfo | null = null,
 ): ScoreResult {
   const notes: string[] = [];
+
+  // 採点入力も許可リスト（ALLOWED_KINDS）に限定する。取得経路は既に kind を絞って
+  // いるが、イベント配列を直接渡された場合に備えた防御的フィルタ（許可外 kind は
+  // 密度・稼働日・継続性のいずれにも算入しない）。
+  const rawEvents = inputEvents.filter((ev) => isAllowedKind(ev.kind));
 
   if (rawEvents.length === 0) {
     notes.push(
