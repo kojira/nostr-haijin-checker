@@ -38,6 +38,12 @@ Nostr の公開投稿パターンから、その人の **「廃人度（Haijin s
 
 - **説明可能**: すべてのスコアに「なぜその点数なのか」の根拠（reason）が付きます。
 - **ローカル完結**: リレーへ直接 WebSocket 接続。API キーやサーバー不要。
+- **過去へ遡る取得**: [nostr-fetch](https://github.com/jiftechnify/nostr-fetch) を基盤に、
+  `until` を 1 ページごとに過去へずらしながら**バックワード・ページング**で
+  初投稿方向へ遡ります（[取得方針](#取得方針バックワードページング) を参照）。
+- **全 kind 取得**: kind を限定せず全イベントを取得し、稼働日・継続性の判定に算入します。
+- **履歴の完全性を可視化**: どこまで遡れたか・掘り切れたか（complete / incomplete）を
+  メタ情報（`history`）と注意書き（`notes`）で正直に表示します。
 - **モジュール分離**: 取得（`src/nostr/`）と採点（`src/scoring/`）が独立。
   将来の Web / LLM 連携で採点ロジックをそのまま再利用できます。
 - **JSON 出力**: `--json` でプログラム連携可能。
@@ -87,15 +93,41 @@ npm run dev -- <npub>
 
 | オプション | 説明 | デフォルト |
 | --- | --- | --- |
-| `-l, --limit <n>` | リレーから取得する最大イベント数（リレーごとの上限） | `500` |
-| `-r, --relays <urls>` | カンマ区切りのリレー URL。未指定ならデフォルト一式 | （内蔵5リレー） |
+| `-r, --relays <urls>` | カンマ区切りのリレー URL。未指定ならデフォルト一式 | （内蔵リレー） |
+| `--page-size <n>` | 1 ページ（バックワード取得 1 回）で取りに行く最大イベント数 | `500` |
+| `--max-pages <n>` | 過去へ遡るページの最大回数（深く掘るほど初投稿に近づく） | `40` |
+| `--max-events <n>` | 取得イベント総数の上限（`0` で無制限） | `0` |
+| `--since <unixsec>` | この時刻 (UNIX 秒) より古いイベントは取りに行かない（下限） | （なし） |
 | `-t, --tz <hours>` | 深夜判定に使う UTC オフセット（時間） | `9`（JST） |
 | `--late-start <hour>` | 深夜帯の開始時刻 (0-23) | `0` |
 | `--late-end <hour>` | 深夜帯の終了時刻 (0-24, 含まない) | `5` |
-| `--timeout <ms>` | 取得タイムアウト（ミリ秒） | `8000` |
+| `--timeout <ms>` | 取得全体のタイムアウト（ミリ秒） | `12000` |
 | `--json` | JSON で出力 | off |
 | `-h, --help` | ヘルプ表示 | |
 | `-V, --version` | バージョン表示 | |
+
+> 旧版の `-l, --limit`（リレーごとの件数上限）は廃止されました。取得は
+> nostr-fetch によるバックワード・ページングに変わり、件数ではなく
+> 「何ページ遡るか（`--max-pages`）／総件数の上限（`--max-events`）／
+> どこまで古い時刻まで（`--since`）」で深さを制御します。
+
+#### 取得方針（バックワード・ページング）
+
+取得基盤は [nostr-fetch](https://github.com/jiftechnify/nostr-fetch) です。
+フィルタは **authors のみ（kinds 指定なし＝全 kind）** でリレーへ問い合わせ、
+`fetchLatestEvents` を「1 ページ」のプリミティブとして使い、`until`（=最古イベントの
+1 秒手前）へずらしながら **過去へ向かってページング**します。
+
+次のいずれかに達するまで遡ります。
+
+- **リレーがこれ以上古いイベントを返さなくなる**（= その人の初投稿に近づく / `exhausted`）
+- `--max-pages` に達する（`maxPages`）
+- `--max-events` に達する（`maxEvents`）
+- `--since` の下限時刻に達する（`sinceBound`）
+- `--timeout` を超える（`timeout`）／最古が進まず打ち切り（`noProgress`）
+
+全 kind を取得するのは、kind1 以外（リアクション kind7・フォロー kind3 など）だけの
+日も**実稼働日・継続性に算入する**ためです。
 
 ### デフォルトのリレー
 
@@ -184,9 +216,17 @@ total = ( Σ(短期+パターンの score×weight) + 長期score × 0.20 )
 
 ### 取得するイベント種別 (kind)
 
+リレーへの問い合わせは **kind を限定せず全イベントを取得**します（フィルタは authors のみ）。
+稼働日・継続性の判定は全 kind を対象にするため、kind1 以外だけの日も実稼働日に数えます。
+
+採点シグナルの算出では、主に次の kind を意味づけして使います。
+
 - `kind 1` … テキスト投稿（`e` タグ付きはリプライ扱い）
 - `kind 6` … リポスト
 - `kind 7` … リアクション
+
+> その他の kind（フォローリスト kind3 など）は、密度・稼働日・継続性といった
+> 「活動量」の観測には算入されます。
 
 ---
 
@@ -242,8 +282,10 @@ npub: npub1example...newbie
 → **A と B は短期では同等でも、長期継続では明確に区別されます。**
 旧版のように「7 日の観測を 3 年の継続と取り違える」ことはありません。
 
-> 注: `--limit` は **リレーごと** の上限です。複数リレーから取得して id で
-> 重複排除するため、実際の取得件数は limit を超えることがあります。
+> 注: 取得は複数リレーへバックワード・ページングし、id で重複排除します。
+> どこまで遡れたか（履歴を掘り切れたか）は出力末尾の「取得:」行と `notes`、
+> JSON では `history` フィールドで確認できます。深く遡るには `--max-pages` /
+> `--max-events` / `--timeout` を増やしてください。
 
 ### JSON 出力
 
@@ -284,9 +326,45 @@ $ node dist/index.js <npub> --json
   "windowStart": 1700000000,
   "windowEnd": 1700528400,
   "timezone": "JST",
+  "history": {
+    "pagesFetched": 12,
+    "stopReason": "exhausted",
+    "reachedOldestAvailable": true,
+    "historyComplete": true,
+    "oldestCreatedAt": 1700000000,
+    "newestCreatedAt": 1700528400,
+    "relaysQueried": 5,
+    "elapsedMs": 3400,
+    "hitEventCap": false,
+    "hitPageCap": false,
+    "timedOut": false,
+    "noProgress": false
+  },
   "notes": ["..."]
 }
 ```
+
+`history` は取得（バックワード・ページング）のメタ情報です。取得経路を介さず
+イベント配列を直接採点した場合は `null` になります。
+
+| フィールド | 意味 |
+| --- | --- |
+| `pagesFetched` | 実行したページ数（過去へ遡った回数） |
+| `stopReason` | 停止理由（`exhausted` / `maxPages` / `maxEvents` / `sinceBound` / `noProgress` / `timeout` / `error`） |
+| `reachedOldestAvailable` | リレーがこれ以上古いイベントを返さなくなったか |
+| `historyComplete` | 履歴を掘り切れた「見込み」か（`exhausted` または `sinceBound` のとき true。best-effort） |
+| `oldestCreatedAt` / `newestCreatedAt` | 観測できた最古／最新の投稿時刻（UNIX 秒。0 件なら null） |
+| `relaysQueried` / `elapsedMs` | 問い合わせたリレー数／取得にかかった時間 |
+| `hitEventCap` / `hitPageCap` / `timedOut` / `noProgress` | それぞれの上限・打ち切りに当たったか |
+
+> **「complete」と「incomplete」の意味**: `historyComplete=true` は、リレーが古い
+> イベントを返さなくなった（`exhausted`）か、指定下限まで遡った（`sinceBound`）
+> ことを表す **best-effort の見込み**です。リレーは履歴の完全性を保証しないため、
+> `exhausted` でも「観測できた最古」が**本当の初投稿とは限りません**（リレーが
+> 古いイベントを破棄している可能性があります）。一方 `historyComplete=false`
+> （上限・タイムアウト・無進捗で打ち切り）のときは、それより前にも投稿がある
+> 可能性が高く、長期継続・古参度は**過小評価され得ます**。いずれの場合も `notes`
+> に正直な但し書きが入ります。
 
 ---
 
@@ -296,6 +374,26 @@ CLI と **同じ採点ロジック**（`src/scoring/`）をそのまま使う静
 同梱しています。ブラウザで `npub` を入力すると、リレーへ直接接続して
 総合スコア・ランク・各シグナルの根拠を表示します。**サーバー不要・完全静的**で、
 GitHub Pages にそのままデプロイできます。
+
+### Web の入力オプションと進捗表示
+
+「詳細設定」（折りたたみ）から CLI 相当のパラメータを調整できます。
+
+| UI 項目 | 対応する CLI | 既定値 |
+| --- | --- | --- |
+| Relays | `--relays` | 内蔵リレー |
+| Page size | `--page-size` | `500` |
+| Max pages | `--max-pages` | `20` |
+| Timezone | `--tz` | `9` |
+| Timeout | `--timeout` | `15000`(ms) |
+
+取得中・完了時はステータス欄に進捗を表示します。
+
+- 取得中: `リレーへ問い合わせ中... 過去へページング (N relays, page-size …, max-pages …)`
+- 完了時: `完了: <件数> 件を採点（<ページ数> ページ・履歴 …）。`
+  履歴部分は掘り切れたかで文言が変わります
+  — 掘り切れた場合は **「リレーが返す限界まで到達」**、
+  途中で打ち切った場合は **「掘り切れず（<停止理由>）」**。
 
 ### NIP-07（ブラウザ拡張）で自分を採点
 
@@ -391,7 +489,8 @@ nostr-haijin-checker/
 │       ├── main.ts         #   入力→取得→採点→DOM 描画
 │       └── style.css       #   スタイル
 ├── test/
-│   └── smoke.test.ts       # ネットワーク不要のスモークテスト（合成データ）
+│   ├── smoke.test.ts       # ネットワーク不要のスモークテスト（合成データ）
+│   └── history.test.ts     #   取得メタ(history)・履歴 notes 挙動の検証（合成データ）
 ├── .github/workflows/
 │   └── deploy-pages.yml    # GitHub Pages 自動デプロイ
 ├── vite.config.ts          # Web ビルド設定（出力 dist-web/、base "./"）

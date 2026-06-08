@@ -58,6 +58,15 @@ export function formatReport(result: ScoreResult): string {
     `${c.dim}観測ウィンドウ:${c.reset} ${obs.observedWindowDays} 日 / 実稼働 ${obs.observedActiveDays} 日 / 初観測から ${obs.firstSeenAgeDays} 日前` +
       `  ${c.dim}観測信頼度 ${Math.round(obs.confidence * 100)}%${c.reset}`,
   );
+  if (result.history) {
+    const h = result.history;
+    const dug = h.historyComplete
+      ? `${c.green}リレーが返す限界まで到達${c.reset}`
+      : `${c.yellow}掘り切れず（${h.stopReason}）${c.reset}`;
+    lines.push(
+      `${c.dim}取得:${c.reset} ${h.pagesFetched} ページ / ${h.relaysQueried} リレー / ${h.elapsedMs}ms ・ 履歴 ${dug}`,
+    );
+  }
   lines.push("");
 
   // ── 3 軸を分離して提示（短期 / 長期 / 総合） ──

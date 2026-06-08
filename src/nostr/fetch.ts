@@ -1,24 +1,30 @@
 /**
  * リレーからイベントを取得するモジュール（Node.js / CLI 用）。
  *
- * Node.js にはグローバル WebSocket が無い環境があるため、`ws` を
- * SimplePool に注入してから共通ロジック（query.ts）へ委譲する。
- * ブラウザ向けには ws を含まない fetch.browser.ts を用意している。
+ * 取得本体は環境非依存の queryUserEvents（query.ts）＝ nostr-fetch ベースの
+ * バックワード・ページング。Node 18-21 にはグローバル WebSocket が無いため、
+ * ws を webSocketConstructor として注入してから委譲する。
+ * （Node 22+ はネイティブ WebSocket があるが、互換のため常に注入しておく。）
  *
- * 取得とスコアリングを分離しておくことで、Web/LLM 層から
- * 「取得済みイベント配列」を直接スコアリングに渡せるようにしている。
+ * ブラウザ向けには ws を含まない fetch.browser.ts を用意している。
  */
-import { useWebSocketImplementation } from "nostr-tools/pool";
 import WebSocket from "ws";
-import { queryUserEvents } from "./query.js";
-
-// Node.js には WebSocket がグローバルに無い環境もあるため明示的に注入する。
-useWebSocketImplementation(WebSocket as unknown as typeof globalThis.WebSocket);
+import { queryUserEvents, type FetchOptions, type FetchResult } from "./query.js";
 
 export type { FetchOptions, FetchResult } from "./query.js";
 
 /**
- * 指定 pubkey(hex) の投稿系イベントを複数リレーから取得する（Node 用）。
- * 実体は環境非依存の queryUserEvents（query.ts）。
+ * 指定 pubkey(hex) のイベントを複数リレーから取得する（Node 用）。
+ * 実体は環境非依存の queryUserEvents（query.ts）。ws を注入する。
  */
-export const fetchUserEvents = queryUserEvents;
+export function fetchUserEvents(
+  pubkeyHex: string,
+  opts: FetchOptions,
+): Promise<FetchResult> {
+  return queryUserEvents(pubkeyHex, {
+    ...opts,
+    webSocketConstructor:
+      opts.webSocketConstructor ??
+      (WebSocket as unknown as NonNullable<FetchOptions["webSocketConstructor"]>),
+  });
+}

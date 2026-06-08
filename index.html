@@ -37,24 +37,34 @@
         </label>
 
         <details class="advanced">
-          <summary>詳細設定（リレー・取得件数・タイムゾーン）</summary>
+          <summary>詳細設定（リレー・ページング・タイムゾーン）</summary>
           <div class="advanced-body">
             <label class="field">
               <span class="field-label">リレー（1行に1つ・<code>wss://</code> のみ）</span>
               <textarea id="relays" name="relays" rows="5" spellcheck="false"></textarea>
             </label>
+            <p class="hint">
+              <code>npub</code> の全 kind を<strong>過去へページング</strong>して、
+              リレーが返す限り初投稿へ向けて遡ります。深く掘るほど時間がかかります。
+            </p>
             <div class="field-row">
               <label class="field">
-                <span class="field-label">取得上限 / リレー</span>
-                <input id="limit" name="limit" type="number" min="1" max="2000" value="500" />
+                <span class="field-label">1ページの件数</span>
+                <input id="pageSize" name="pageSize" type="number" min="50" max="2000" step="50" value="500" />
               </label>
+              <label class="field">
+                <span class="field-label">最大ページ数（遡る深さ）</span>
+                <input id="maxPages" name="maxPages" type="number" min="1" max="200" value="20" />
+              </label>
+            </div>
+            <div class="field-row">
               <label class="field">
                 <span class="field-label">タイムゾーン (UTC offset 時)</span>
                 <input id="tz" name="tz" type="number" min="-12" max="14" value="9" />
               </label>
               <label class="field">
                 <span class="field-label">タイムアウト (ms)</span>
-                <input id="timeout" name="timeout" type="number" min="1000" max="30000" step="500" value="8000" />
+                <input id="timeout" name="timeout" type="number" min="1000" max="60000" step="500" value="15000" />
               </label>
             </div>
           </div>
@@ -82,7 +92,10 @@
             観測範囲が狭まることがあります（スコアは観測できた範囲の近似値です）。
           </li>
           <li>
-            取得件数・保持期間はリレー依存です。古い投稿は取得できないことがあります。
+            取得は <code>nostr-fetch</code> で<strong>過去へページング</strong>し、
+            リレーが返す限り初投稿へ向けて遡ります。ただし保持期間・件数はリレー依存で、
+            古い投稿は破棄されていることがあります。結果には「どこまで遡れたか・履歴を
+            掘り切れたか」を明示します（掘り切れない場合は長期評価が過小になり得ます）。
           </li>
           <li>
             観測できた期間（観測ウィンドウ）が短い場合、「長期継続・古参度」は

@@ -15,6 +15,64 @@ export interface NostrEvent {
   content: string;
 }
 
+/**
+ * バックワード・ページングがどう止まったか。
+ * リレーが返さなくなった/上限到達/時間切れ など、観測の「限界の理由」を表す。
+ */
+export type FetchStopReason =
+  /** リレーがこれ以上古いイベントを返さなくなった（自然終了＝リレーが保持する限界まで遡れた）。 */
+  | "exhausted"
+  /** ページ数上限に達した（まだ過去が残っている可能性が高い）。 */
+  | "maxPages"
+  /** 取得イベント数の上限に達した。 */
+  | "maxEvents"
+  /** 最古タイムスタンプが過去側へ進まなくなった（リレーが until を無視した等）。 */
+  | "noProgress"
+  /** 指定した下限時刻（since）まで遡り切った。 */
+  | "sinceBound"
+  /** タイムアウト／中断。 */
+  | "timeout"
+  /** 取得中にエラーが発生した。 */
+  | "error";
+
+/**
+ * 取得（バックワード・ページング）のメタ情報。
+ * 「どこまで遡れたか」「履歴を掘り切れたか」を正直に表現するための中核データ。
+ * リレーは保持期間・件数を保証しないため、reachedOldestAvailable でも
+ * それが本当の初投稿とは限らない（あくまで“リレーが返す限界”）。
+ */
+export interface HistoryMeta {
+  /** 実際に投げたバックワード・ページの回数。 */
+  pagesFetched: number;
+  /** ページングが止まった理由。 */
+  stopReason: FetchStopReason;
+  /**
+   * リレーがこれ以上古いイベントを返さなくなったか（=自然終了）。
+   * true でも「リレーが保持する範囲の限界」であり、真の初投稿の保証はない。
+   */
+  reachedOldestAvailable: boolean;
+  /**
+   * 履歴を掘り切れた“見込み”か。上限到達・タイムアウト・無進捗・エラーで false。
+   * リレーは完全性を保証できないため、true でも絶対の保証ではない（best-effort）。
+   */
+  historyComplete: boolean;
+  /** 観測できた最古/最新の created_at（UNIX 秒）。null は該当なし。 */
+  oldestCreatedAt: number | null;
+  newestCreatedAt: number | null;
+  /** 問い合わせたリレー数（概算）。 */
+  relaysQueried: number;
+  /** 取得に要した時間（ms）。 */
+  elapsedMs: number;
+  /** 件数上限に当たったか。 */
+  hitEventCap: boolean;
+  /** ページ数上限に当たったか。 */
+  hitPageCap: boolean;
+  /** タイムアウト／中断したか。 */
+  timedOut: boolean;
+  /** 最古が過去へ進まず打ち切ったか。 */
+  noProgress: boolean;
+}
+
 /** スコアリングに使うために整形した投稿データ。 */
 export interface AnalyzedEvent {
   id: string;
@@ -116,6 +174,11 @@ export interface ScoreResult {
   windowEnd: number | null;
   /** 表示タイムゾーン（時間分布の解釈に使用）。 */
   timezone: string;
+  /**
+   * 取得（バックワード・ページング）のメタ情報。
+   * どこまで遡れたか・履歴を掘り切れたかを表す。取得経路を介さない場合は null。
+   */
+  history: HistoryMeta | null;
   /** 観測の限界に関する注意書き。 */
   notes: string[];
 }

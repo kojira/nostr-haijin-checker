@@ -7,6 +7,7 @@
  * 将来の Web/LLM 層からもそのまま再利用できる。
  */
 import type {
+  HistoryMeta,
   NostrEvent,
   ObservationInfo,
   ScoreResult,
@@ -52,6 +53,9 @@ export const WEIGHTS = {
 /**
  * @param now 現在時刻(UNIX秒)。古参度（初観測からの経過）の基準。
  *            既定は実時刻。テストでは固定値を渡して決定的にする。
+ * @param fetchMeta 取得（バックワード・ページング）のメタ情報。どこまで遡れたか・
+ *            履歴を掘り切れたかを注意書き（notes）に反映する。取得経路を介さない
+ *            （直接イベント配列を渡す）場合は null。
  */
 export function scoreEvents(
   npub: string,
@@ -59,14 +63,16 @@ export function scoreEvents(
   rawEvents: NostrEvent[],
   config: ScoringConfig = DEFAULT_CONFIG,
   now: number = Math.floor(Date.now() / 1000),
+  fetchMeta: HistoryMeta | null = null,
 ): ScoreResult {
   const notes: string[] = [];
 
   if (rawEvents.length === 0) {
     notes.push(
-      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--limit を増やしてください。",
+      "対象リレーから投稿を取得できませんでした。別のリレーを --relays で指定するか、--max-pages / --timeout を増やしてみてください。",
     );
-    return emptyResult(npub, pubkeyHex, config, notes);
+    for (const n of historyNotes(fetchMeta)) notes.push(n);
+    return emptyResult(npub, pubkeyHex, config, notes, fetchMeta);
   }
 
   const events = prepareEvents(rawEvents, config);
@@ -123,9 +129,8 @@ export function scoreEvents(
       `観測ウィンドウが ${observation.observedWindowDays} 日（実稼働 ${observation.observedActiveDays} 日）と短いため、長期継続・古参度は評価を保留しています（low-confidence）。表示は短期の活発さが中心です。`,
     );
   }
-  notes.push(
-    "取得はリレー側の保持期間・件数制限に依存します。実際の活動の一部しか観測できていない可能性があります。",
-  );
+  // 取得（ページング）の実情を正直に反映する。掘り切れたか／途中で打ち切ったか。
+  for (const n of historyNotes(fetchMeta)) notes.push(n);
 
   return {
     npub,
@@ -139,8 +144,60 @@ export function scoreEvents(
     windowStart: start,
     windowEnd: end,
     timezone: config.timezoneLabel,
+    history: fetchMeta,
     notes,
   };
+}
+
+/** UNIX 秒を "YYYY-MM-DD HH:mmZ" の短い ISO 文字列にする（注意書き用）。 */
+function fmtUnix(sec: number | null): string {
+  if (sec == null) return "-";
+  return new Date(sec * 1000).toISOString().replace("T", " ").slice(0, 16) + "Z";
+}
+
+/**
+ * 取得メタ情報から「どこまで遡れたか・履歴が不完全かもしれない」を表す注意書きを作る。
+ * リレーは完全性を保証しないため、自然終了（exhausted）でも「真の初投稿」とは
+ * 断定しない。掘り切れていない（上限・タイムアウト・無進捗）ときは正直にそう言う。
+ */
+export function historyNotes(meta: HistoryMeta | null): string[] {
+  if (!meta) return [];
+  const out: string[] = [];
+  const oldest = fmtUnix(meta.oldestCreatedAt);
+
+  if (meta.reachedOldestAvailable) {
+    out.push(
+      `過去方向へ ${meta.pagesFetched} ページ遡り、リレーはこれ以上古いイベントを返しませんでした（観測できた最古 ${oldest}）。これは「これらのリレーが保持する範囲の限界」であり、リレーが古いイベントを破棄している場合、本当の最初の投稿とは限りません。`,
+    );
+  }
+
+  const truncatedReasons: string[] = [];
+  if (meta.hitPageCap) truncatedReasons.push("ページ数上限");
+  if (meta.hitEventCap) truncatedReasons.push("取得件数上限");
+  if (meta.timedOut) truncatedReasons.push("タイムアウト");
+  if (meta.noProgress) truncatedReasons.push("最古が過去へ進まず打ち切り");
+  if (meta.stopReason === "error") truncatedReasons.push("取得エラー");
+
+  if (truncatedReasons.length > 0) {
+    out.push(
+      `履歴を掘り切れていません（理由: ${truncatedReasons.join(
+        " / ",
+      )}）。観測できた最古 ${oldest} より前にも投稿がある可能性が高く、長期継続・古参度は過小評価され得ます。--max-pages / --max-events / --timeout を増やすと、より過去まで遡れることがあります。`,
+    );
+  }
+
+  if (meta.stopReason === "sinceBound") {
+    out.push(
+      `指定した下限時刻まで遡って打ち切りました（観測できた最古 ${oldest}）。それより前は取得していません。`,
+    );
+  }
+
+  out.push(
+    `取得はリレーの保持期間・件数・接続ポリシーに依存します（${meta.relaysQueried} リレー / ${meta.pagesFetched} ページ / ${Math.round(
+      meta.elapsedMs,
+    )}ms）。観測できたのは活動の一部かもしれません。`,
+  );
+  return out;
 }
 
 /** シグナル群の重み付き平均（表示用サブスコア）。 */
@@ -156,6 +213,7 @@ function emptyResult(
   pubkeyHex: string,
   config: ScoringConfig,
   notes: string[],
+  fetchMeta: HistoryMeta | null = null,
 ): ScoreResult {
   const zero = (
     key: string,
@@ -200,6 +258,7 @@ function emptyResult(
     windowStart: null,
     windowEnd: null,
     timezone: config.timezoneLabel,
+    history: fetchMeta,
     notes,
   };
 }

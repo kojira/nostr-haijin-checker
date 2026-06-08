@@ -367,3 +367,19 @@ code {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- 取得（ページング）に関する補助表示 ---- */
+.hint {
+  margin: 8px 0 4px;
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+.history-line {
+  color: var(--accent-2);
+}
+
+.history-line.history-warn {
+  color: var(--error);
+}

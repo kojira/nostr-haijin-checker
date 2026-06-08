@@ -34,7 +34,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 const form = $<HTMLFormElement>("form");
 const npubInput = $<HTMLInputElement>("npub");
 const relaysInput = $<HTMLTextAreaElement>("relays");
-const limitInput = $<HTMLInputElement>("limit");
+const pageSizeInput = $<HTMLInputElement>("pageSize");
+const maxPagesInput = $<HTMLInputElement>("maxPages");
 const tzInput = $<HTMLInputElement>("tz");
 const timeoutInput = $<HTMLInputElement>("timeout");
 const submitBtn = $<HTMLButtonElement>("submit");
@@ -143,8 +144,9 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     return;
   }
 
-  const limit = clampNum(Number(limitInput.value), 1, 2000, 500);
-  const timeoutMs = clampNum(Number(timeoutInput.value), 1000, 30000, 8000);
+  const pageSize = clampNum(Number(pageSizeInput.value), 50, 2000, 500);
+  const maxPages = clampNum(Number(maxPagesInput.value), 1, 200, 20);
+  const timeoutMs = clampNum(Number(timeoutInput.value), 1000, 60000, 15000);
   const tz = clampNum(Number(tzInput.value), -12, 14, 9);
 
   const config: ScoringConfig = {
@@ -159,17 +161,34 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   url.searchParams.set("npub", npub);
   history.replaceState(null, "", url.toString());
 
-  setBusy(true, `リレーへ問い合わせ中... (${relays.length} relays, limit ${limit})`);
+  setBusy(
+    true,
+    `リレーへ問い合わせ中... 過去へページング (${relays.length} relays, page-size ${pageSize}, max-pages ${maxPages})`,
+  );
 
   try {
-    const { events } = await fetchUserEvents(pubkeyHex, {
+    const { events, meta } = await fetchUserEvents(pubkeyHex, {
       relays,
-      limit,
+      pageSize,
+      maxPages,
       timeoutMs,
     });
-    const result = scoreEvents(npub, pubkeyHex, events, config);
+    const result = scoreEvents(
+      npub,
+      pubkeyHex,
+      events,
+      config,
+      Math.floor(Date.now() / 1000),
+      meta,
+    );
     renderResult(result);
-    setBusy(false, `完了: ${result.sampleSize} 件を採点しました。`);
+    const dug = meta.historyComplete
+      ? "リレーが返す限界まで到達"
+      : `掘り切れず（${meta.stopReason}）`;
+    setBusy(
+      false,
+      `完了: ${result.sampleSize} 件を採点（${meta.pagesFetched} ページ・履歴 ${dug}）。`,
+    );
   } catch (err) {
     console.error(err);
     setError(
@@ -186,6 +205,19 @@ function clampNum(n: number, min: number, max: number, fallback: number): number
 function fmtDate(sec: number | null): string {
   if (sec == null) return "-";
   return new Date(sec * 1000).toISOString().replace("T", " ").slice(0, 16) + "Z";
+}
+
+/** 取得（ページング）の到達度を 1 行で表す（履歴が不完全なら警告色）。 */
+function historyLineHtml(r: ScoreResult): string {
+  const h = r.history;
+  if (!h) return "";
+  const label = h.historyComplete
+    ? "リレーが返す限界まで到達"
+    : `掘り切れず（${h.stopReason}）`;
+  const cls = h.historyComplete ? "history-line" : "history-line history-warn";
+  return `<span class="${cls}">取得 ${h.pagesFetched} ページ / ${h.relaysQueried} リレー ・ 履歴 ${escapeHtml(
+    label,
+  )}</span><br />`;
 }
 
 function renderResult(r: ScoreResult): void {
@@ -210,6 +242,7 @@ function renderResult(r: ScoreResult): void {
       初観測から ${obs.firstSeenAgeDays} 日前 ・ 観測信頼度 ${Math.round(
         obs.confidence * 100,
       )}%<br />
+      ${historyLineHtml(r)}
       <span class="npub-line">${escapeHtml(r.npub)}</span>
     </p>
   `;
