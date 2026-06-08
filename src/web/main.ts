@@ -55,7 +55,6 @@ const windowTimeoutInput = $<HTMLInputElement>("windowTimeout");
 const relayTimeoutInput = $<HTMLInputElement>("relayTimeout");
 const overallTimeoutInput = $<HTMLInputElement>("overallTimeout");
 const streakEnabledInput = $<HTMLInputElement>("streakEnabled");
-const streakMaxDaysInput = $<HTMLInputElement>("streakMaxDays");
 const submitBtn = $<HTMLButtonElement>("submit");
 const nip07Btn = $<HTMLButtonElement>("nip07");
 const statusEl = $<HTMLParagraphElement>("status");
@@ -175,7 +174,6 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   const tz = clampNum(Number(tzInput.value), -12, 14, 9);
   // ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ。
   const streakEnabled = streakEnabledInput.checked;
-  const streakMaxDays = clampNum(Number(streakMaxDaysInput.value), 1, 100000, 1000);
 
   const config: ScoringConfig = {
     ...DEFAULT_CONFIG,
@@ -223,7 +221,6 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
         streak = await lookupUserStreak(pubkeyHex, {
           relays,
           tzOffsetHours: tz,
-          maxDays: streakMaxDays,
           nowUnix: nowSec,
         });
       } catch (err) {
@@ -466,7 +463,7 @@ function streakLineHtml(s: StreakInfo | null): string {
     const state = s.ongoing
       ? "継続中"
       : `途切れ（${s.daysSinceLastActive ?? "?"}日前）`;
-    const more = s.truncated ? " ・ 上限到達（さらに長い可能性／下限として加点）" : "";
+    const more = s.truncated ? " ・ 途中で打ち切り（さらに長い可能性／下限として加点）" : "";
     body = `<b>${s.currentStreakDays}</b> 日（${escapeHtml(state)}）・ 最新実稼働 ${escapeHtml(
       s.lastActiveDay ?? "-",
     )}${escapeHtml(more)} ・ 総合に加点（長期軸・重み12%）`;

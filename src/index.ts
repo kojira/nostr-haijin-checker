@@ -92,11 +92,6 @@ program
     "連続実稼働日数（ストリーク）の軽量ルックアップを行わない",
   )
   .option(
-    "--streak-max-days <n>",
-    "ストリークで遡る最大日数（= 軽量プローブ往復の安全上限）。全件取得とは別経路",
-    "1000",
-  )
-  .option(
     "--streak-overall-timeout <ms>",
     "ストリーク走査全体の安全上限（ミリ秒・0 で無効）。全件取得とは独立",
     "60000",
@@ -122,7 +117,8 @@ program
   遡って「実稼働日」を数えます（混雑日でも全件は取らないので、全件取得より遠くまで安く
   遡れます）。取得経路は独立ですが、連続日数は「連続実稼働」シグナル（長期軸・重み 12%・
   約 60 日で頭打ち）として総合スコアに加点され、連続日数が長いほどスコアが上がります。
-  --no-streak で無効化、--streak-max-days で遡る最大日数を調整できます。
+  辿れるだけ辿るベストエフォートで、非常に長いストリークは途中で打ち切られる（truncated）
+  ことがあります。--no-streak で無効化できます。
 
 タイムアウト設計（グローバルではなくリクエスト／リレー単位）:
   取得は各リレーを独立に処理します。タイムアウトは責務ごとに分割され、
@@ -156,7 +152,6 @@ const opts = program.opts<{
   overallTimeout: string;
   timeout?: string;
   streak: boolean;
-  streakMaxDays: string;
   streakOverallTimeout: string;
   json: boolean;
 }>();
@@ -266,7 +261,6 @@ async function main(): Promise<void> {
       streak = await lookupUserStreak(pubkeyHex, {
         relays,
         tzOffsetHours: config.tzOffsetHours,
-        maxDays: Number(opts.streakMaxDays),
         nowUnix: nowSec,
         overallTimeoutMs: Number(opts.streakOverallTimeout),
       });
