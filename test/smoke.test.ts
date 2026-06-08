@@ -141,14 +141,14 @@ test("短観測の高密度ユーザー: 短期は高いが長期継続は主張
     r.subScores.shortTermActivity >= 60,
     `短期が低すぎ: ${r.subScores.shortTermActivity}`,
   );
-  // 長期継続は「観測不足」で評価不能、スコアも低い（古参を僭称しない）。
+  // 長期継続は短期中心の評価となり、スコアも低い（古参を僭称しない）。
   assert.equal(r.observation.longTermAssessable, false);
   assert.ok(
     r.subScores.longTermRetention < 25,
     `長期が高すぎ（短観測なのに継続を主張）: ${r.subScores.longTermRetention}`,
   );
-  // 観測ウィンドウ不足の注意書きが出る。
-  assert.ok(r.notes.some((n) => n.includes("low-confidence")));
+  // 短観測時は短期中心で評価する旨の注意書きが出る。
+  assert.ok(r.notes.some((n) => n.includes("短期の活発さを中心")));
 });
 
 test("長期にわたり活動: 長期継続が高く・評価可能になる", () => {

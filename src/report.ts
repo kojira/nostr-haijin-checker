@@ -97,7 +97,7 @@ export function formatReport(result: ScoreResult): string {
   lines.push(axisLine("短期アクティブ度", result.subScores.shortTermActivity));
   const longSuffix = obs.longTermAssessable
     ? ""
-    : `  ${c.yellow}⚠ 観測ウィンドウ不足（low-confidence）${c.reset}`;
+    : `  ${c.yellow}短期中心で評価${c.reset}`;
   lines.push(
     axisLine("長期継続・古参度", result.subScores.longTermRetention, longSuffix),
   );
@@ -112,7 +112,7 @@ export function formatReport(result: ScoreResult): string {
   lines.push(`        ${c.dim}${result.rank.description}${c.reset}`);
   if (!obs.longTermAssessable) {
     lines.push(
-      `        ${c.yellow}※ 短い観測ウィンドウのため「長期継続」は主張していません（短期の活発さが中心）。${c.reset}`,
+      `        ${c.yellow}※ 長期継続よりも短期の活発さを中心に評価しています。${c.reset}`,
     );
   }
   lines.push("");

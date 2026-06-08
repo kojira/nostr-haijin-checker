@@ -138,12 +138,12 @@ export function scoreEvents(
 
   if (rawEvents.length < 30) {
     notes.push(
-      `サンプル数が ${rawEvents.length} 件と少なく、スコアの信頼度は低めです。`,
+      `サンプル数が ${rawEvents.length} 件のため、スコアは参考値としてご覧ください。`,
     );
   }
   if (!observation.longTermAssessable) {
     notes.push(
-      `観測ウィンドウが ${observation.observedWindowDays} 日（実稼働 ${observation.observedActiveDays} 日）と短いため、長期継続・古参度は評価を保留しています（low-confidence）。表示は短期の活発さが中心です。`,
+      `観測ウィンドウが ${observation.observedWindowDays} 日（実稼働 ${observation.observedActiveDays} 日）のため、短期の活発さを中心に評価しています。`,
     );
   }
   // 取得（ページング）の実情を正直に反映する。掘り切れたか／途中で打ち切ったか。

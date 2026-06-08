@@ -331,7 +331,7 @@ export function computeObservation(
  * 「初観測からの経過 × 観測ウィンドウ長 × 実稼働日数」で“素の古参度”を作り、
  * これを観測信頼度 confidence で割り引く。短い観測ウィンドウでは confidence が
  * 0 に近づくため、**7日の観測から 3年の継続を主張することは構造的に起きない**。
- * 評価不能（longTermAssessable=false）のときは reason で low-confidence を明示する。
+ * 評価不能（longTermAssessable=false）のときは reason で短期中心の評価である旨を明示する。
  */
 export function longTermRetentionSignal(
   obs: ObservationInfo,
@@ -362,9 +362,9 @@ export function longTermRetentionSignal(
       )}）。`
     : `観測ウィンドウが ${round1(
         obs.observedWindowDays,
-      )}日と短く（実稼働 ${obs.observedActiveDays}日）、長期継続・古参度は十分に評価できません（low-confidence, 信頼度 ${Math.round(
+      )}日（実稼働 ${obs.observedActiveDays}日）のため、短期の活発さを中心に評価しています（信頼度 ${Math.round(
         obs.confidence * 100,
-      )}%）。短期の活発さとは別軸で見ています。`;
+      )}%）。`;
 
   return {
     key: "longTermRetention",

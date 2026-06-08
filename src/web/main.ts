@@ -389,7 +389,7 @@ function renderResult(r: ScoreResult): void {
       "長期継続・古参度",
       obs.longTermAssessable
         ? "観測ウィンドウが十分にあり、長期の継続として評価できます。"
-        : "観測ウィンドウが短いため評価を保留しています。",
+        : "短期の活発さを中心に評価しています。",
       r.subScores.longTermRetention,
       !obs.longTermAssessable,
     ),
@@ -453,7 +453,7 @@ function axisRow(
   row.innerHTML = `
     <div class="axis-top">
       <span class="axis-label">${escapeHtml(label)}</span>
-      ${lowConfidence ? '<span class="axis-flag">⚠ 観測不足</span>' : ""}
+      ${lowConfidence ? '<span class="axis-flag">短期中心</span>' : ""}
       <span class="axis-score">${pct}</span>
     </div>
     <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
