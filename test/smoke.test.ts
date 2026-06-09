@@ -175,10 +175,8 @@ function mkStreak(days: number, opts: Partial<StreakInfo> = {}): StreakInfo {
     lastActiveDay: days > 0 ? "2024-01-01" : null,
     daysSinceLastActive: days > 0 ? 0 : null,
     ongoing: days > 0,
-    daysScanned: days,
+    observedActiveDays: days,
     truncated: false,
-    relaysQueried: 1,
-    elapsedMs: 1,
     ...opts,
   };
 }
@@ -255,7 +253,7 @@ test("ストリーク: truncated は下限として高く加点しつつ正確�
     DEFAULT_CONFIG,
     now,
     null,
-    mkStreak(1000, { truncated: true, daysScanned: 1000 }),
+    mkStreak(1000, { truncated: true, observedActiveDays: 1000 }),
   );
   const sig = r.signals.find((s) => s.key === "streakRetention")!;
   // 既知の長いストリークは高く出る（飽和で頭打ち）。

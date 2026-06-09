@@ -9,14 +9,10 @@
  * 取得(nostr/)・採点(scoring/) のロジックは独立モジュールに分離している。
  */
 import { Command } from "commander";
-import {
-  fetchUserEvents,
-  lookupUserStreak,
-  type FetchProgress,
-} from "./nostr/fetch.js";
+import { fetchUserEvents, type FetchProgress } from "./nostr/fetch.js";
 import { DEFAULT_RELAYS } from "./nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "./nostr/npub.js";
-import { DEFAULT_CONFIG, scoreEvents } from "./scoring/index.js";
+import { DEFAULT_CONFIG, deriveStreak, scoreEvents } from "./scoring/index.js";
 import { formatReport } from "./report.js";
 import {
   ANALYSIS_STAGE_LABELS,
@@ -89,12 +85,7 @@ program
   )
   .option(
     "--no-streak",
-    "連続実稼働日数（ストリーク）の軽量ルックアップを行わない",
-  )
-  .option(
-    "--streak-overall-timeout <ms>",
-    "任意のストリーク走査全体の安全上限（ミリ秒・0 で無効）。既定 0=無効で時間では打ち切らない。全件取得とは独立",
-    "0",
+    "連続実稼働日数（ストリーク）を計測しない（取得済みイベントからの導出を行わない）",
   )
   .option("--json", "JSON で出力（プログラム連携用）", false)
   .addHelpText(
@@ -110,17 +101,16 @@ program
   --since（既定 2021-01-01）まで全ウィンドウを覆うか、--max-windows / --max-events /
   リレー単位のタイムアウト上限まで遡ります。掘り切れたか否かは結果に明示されます。
 
-ストリーク（連続実稼働日数）— 全件取得とは別経路:
-  総合スコアの採点には「全イベント」が要るため許可した kind の全イベントを掘りますが、
+ストリーク（連続実稼働日数）— 取得済みイベントから導出:
   ストリーク（連続実稼働日数）の判定に必要なのは「その日に投稿が 1 件でもあるか」だけです。
-  そこでストリークは**全件取得とは独立した軽量プローブ**で、日ごとに最新 1 件だけを
-  遡って「実稼働日」を数えます（混雑日でも全件は取らないので、全件取得より遠くまで安く
-  遡れます）。取得経路は独立ですが、連続日数は「連続実稼働」シグナル（長期軸・重み 12%・
-  約 60 日で頭打ち）として総合スコアに加点され、連続日数が長いほどスコアが上がります。
-  既定では時間で打ち切らず（--streak-overall-timeout は既定 0=無効）、リレーが返す限り
-  辿れるだけ辿ります。3 年超の長いストリークも履歴が尽きるところで自然に終端します。
-  プローブ失敗や、明示指定した安全上限に達した場合のみ途中打ち切り（truncated）になります。
-  --no-streak で無効化、--streak-overall-timeout <ms> で任意の安全上限を付けられます。
+  これは上の適応的タイムウィンドウ取得で集めたイベントから導けるため、**別経路の追加取得は
+  行いません**（旧実装の「日ごとに最新 1 件を遡る軽量プローブ」を廃止し、二重取得と結果ズレを
+  なくしました）。取得済みイベントをローカル日単位に集計し、最新の実稼働日から連続が途切れる
+  まで数えます。連続日数は「連続実稼働」シグナル（長期軸・重み 12%・約 60 日で頭打ち）として
+  総合スコアに加点され、連続日数が長いほどスコアが上がります。
+  取得が要求範囲を覆い切れていれば、観測したギャップは確定なので連続日数は確定値です。
+  取得が掘り切れていない（各種上限・タイムアウト）場合のみ下限（truncated）として控えめに
+  扱います。--no-streak で計測を無効化できます。
 
 タイムアウト設計（グローバルではなくリクエスト／リレー単位）:
   取得は各リレーを独立に処理します。タイムアウトは責務ごとに分割され、
@@ -154,7 +144,6 @@ const opts = program.opts<{
   overallTimeout: string;
   timeout?: string;
   streak: boolean;
-  streakOverallTimeout: string;
   json: boolean;
 }>();
 
@@ -247,35 +236,18 @@ async function main(): Promise<void> {
     process.stderr.write("\n");
   }
 
-  // ── ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ ──
-  // 全件取得とは独立に、日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。
-  // 取得経路は独立だが、連続日数は scoreEvents 内で「連続実稼働」シグナル（長期軸・重み 12%）
-  // として総合スコアに加点される。--no-streak で無効化。
+  // ── ストリーク（連続実稼働日数）は取得済みイベントから導出する（別経路の取得はしない） ──
+  // メイン取得で集めたイベントをローカル日単位に集計し、最新の実稼働日から連続が途切れる
+  // まで数える。連続日数は scoreEvents 内で「連続実稼働」シグナル（長期軸・重み 12%）として
+  // 総合スコアに加点される。取得が掘り切れていなければ下限（truncated）扱い。--no-streak で無効化。
   const nowSec = Math.floor(Date.now() / 1000);
   let streak: StreakInfo | null = null;
   if (opts.streak) {
-    if (!opts.json) {
-      process.stderr.write(
-        "連続実稼働日数（ストリーク）を軽量ルックアップ中... 全件取得とは別経路で日ごとに最新 1 件だけを遡ります。\n",
-      );
-    }
-    try {
-      streak = await lookupUserStreak(pubkeyHex, {
-        relays,
-        tzOffsetHours: config.tzOffsetHours,
-        nowUnix: nowSec,
-        overallTimeoutMs: Number(opts.streakOverallTimeout),
-      });
-    } catch (err) {
-      // ストリークは別経路の任意シグナル。失敗しても採点本体は止めない（streak=null＝加点なしのまま）。
-      if (!opts.json) {
-        process.stderr.write(
-          `ストリークのルックアップに失敗しました（採点は継続します）: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
-        );
-      }
-    }
+    streak = deriveStreak(events, {
+      tzOffsetHours: config.tzOffsetHours,
+      nowUnix: nowSec,
+      historyComplete: meta.historyComplete,
+    });
   }
 
   // ── 解析（採点）フェーズ。巨大データセットでも「取得後に固まっていない」ことを

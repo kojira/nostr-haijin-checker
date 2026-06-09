@@ -6,14 +6,10 @@
  * 採点・npub 変換・ランクは CLI とまったく同じモジュールを再利用する。
  */
 import "./style.css";
-import {
-  fetchUserEvents,
-  lookupUserStreak,
-  type FetchProgress,
-} from "../nostr/fetch.browser.js";
+import { fetchUserEvents, type FetchProgress } from "../nostr/fetch.browser.js";
 import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
-import { DEFAULT_CONFIG, scoreEvents } from "../scoring/index.js";
+import { DEFAULT_CONFIG, deriveStreak, scoreEvents } from "../scoring/index.js";
 import { buildShareText } from "../scoring/shareText.js";
 import {
   ANALYSIS_STAGE_LABELS,
@@ -188,9 +184,6 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   url.searchParams.set("npub", npub);
   history.replaceState(null, "", url.toString());
 
-  // ストリークを実行する場合のみフェーズ・ステッパーに「ストリーク確認中」を出す。
-  includeStreakStep = streakEnabled;
-
   setBusy(
     true,
     `リレーへ問い合わせ中...（${relays.length} relays）`,
@@ -208,26 +201,18 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       onProgress: (p) => renderProgress(p),
     });
 
-    // ── ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ ──
-    // 日ごとに最新 1 件だけを遡って「その日に投稿があったか」を数える。取得経路は独立だが、
-    // 得られた連続日数は scoreEvents 内で「連続実稼働」シグナル（長期軸・重み 12%）として
-    // 総合スコアに加点される。失敗しても採点本体は止めない（streak=null のまま）。
+    // ── ストリーク（連続実稼働日数）は取得済みイベントから導出する（別経路の取得はしない） ──
+    // メイン取得で集めたイベントをローカル日単位に集計し、最新の実稼働日から連続が途切れる
+    // まで数える。同期処理なので独立フェーズは持たない。得られた連続日数は scoreEvents 内で
+    // 「連続実稼働」シグナル（長期軸・重み 12%）として総合スコアに加点される。
     const nowSec = Math.floor(Date.now() / 1000);
     let streak: StreakInfo | null = null;
     if (streakEnabled) {
-      setBusy(true, "連続実稼働日数（ストリーク）を確認中…");
-      renderPhasePanel("streak", streakPhaseBodyHtml());
-      await nextFrame();
-      try {
-        streak = await lookupUserStreak(pubkeyHex, {
-          relays,
-          tzOffsetHours: tz,
-          nowUnix: nowSec,
-        });
-      } catch (err) {
-        // ストリークは別経路の任意シグナル。失敗しても採点は継続（streak=null＝加点なしのまま）。
-        console.warn("streak lookup failed:", err);
-      }
+      streak = deriveStreak(events, {
+        tzOffsetHours: tz,
+        nowUnix: nowSec,
+        historyComplete: meta.historyComplete,
+      });
     }
 
     // ── 解析（採点）フェーズ ──
@@ -291,27 +276,18 @@ const RELAY_STATUS_VIEW: Record<RelayStat["status"], { label: string; cls: strin
 const nextFrame = (): Promise<void> =>
   new Promise((resolve) => requestAnimationFrame(() => resolve()));
 
-/** このフローでストリーク確認フェーズを表示するか（無効時はステッパーから省く）。 */
-let includeStreakStep = true;
-
 /** フェーズ・ステッパーに並べるトップレベル・フェーズの順序。 */
-const PHASE_ORDER: WorkflowPhase[] = [
-  "fetching",
-  "streak",
-  "analyzing",
-  "rendering",
-];
+const PHASE_ORDER: WorkflowPhase[] = ["fetching", "analyzing", "rendering"];
 
 /**
- * 4 フェーズ（取得中 / ストリーク確認中 / 解析中 / 描画準備中）のステッパー HTML。
+ * 3 フェーズ（取得中 / 解析中 / 描画準備中）のステッパー HTML。
  * active が現フェーズ（null は全完了）。完了済みは ✓、現フェーズはドットが脈打つ。
  * これにより、解析のような同期処理でメインスレッドが詰まっていても、コンポジタ駆動の
  * CSS アニメーションでドットが動き続け、「固まっていない」ことが伝わる。
+ * ストリークは取得済みイベントから同期導出するため独立フェーズを持たない。
  */
 function phaseStepperHtml(active: WorkflowPhase | null): string {
-  const steps = PHASE_ORDER.filter(
-    (p) => includeStreakStep || p !== "streak",
-  );
+  const steps = PHASE_ORDER;
   const activeIdx = active ? steps.indexOf(active) : steps.length;
   const items = steps
     .map((p, i) => {
@@ -362,14 +338,6 @@ function fetchPhaseBodyHtml(p: FetchProgress): string {
     </div>
     <p class="pg-oldest">ここまで遡れた最古: <b>${escapeHtml(oldest)}</b> ・ 経過 ${elapsed}s ・ 完了 ${p.relaysCompleted}/${p.relaysTotal} リレー</p>
     <ul class="relay-list">${relayRows}</ul>
-  `;
-}
-
-/** ストリーク確認フェーズの本文（別経路の軽量ルックアップ中であることを示す）。 */
-function streakPhaseBodyHtml(): string {
-  return `
-    <h2 class="progress-title">連続実稼働日数（ストリーク）を確認中…</h2>
-    <p class="pg-oldest">全件取得とは別経路で、日ごとに「その日に投稿が 1 件でもあるか」だけを軽量に遡っています。</p>
   `;
 }
 
@@ -451,9 +419,9 @@ function historyLineHtml(r: ScoreResult): string {
 }
 
 /**
- * ストリーク（連続実稼働日数）を 1 行で表す。取得は全件取得とは別経路（日ごとの有無で
- * 判定）であること、および連続日数が「連続実稼働」シグナルとして総合スコアに加点される
- * ことを併記し、利用者が効き方を誤解しないようにする。
+ * ストリーク（連続実稼働日数）を 1 行で表す。取得済みイベントから導出していること、および
+ * 連続日数が「連続実稼働」シグナルとして総合スコアに加点されることを併記し、利用者が効き方を
+ * 誤解しないようにする。
  */
 function streakLineHtml(s: StreakInfo | null): string {
   if (!s) return "";
@@ -464,7 +432,7 @@ function streakLineHtml(s: StreakInfo | null): string {
     const state = s.ongoing
       ? "継続中"
       : `途切れ（${s.daysSinceLastActive ?? "?"}日前）`;
-    const more = s.truncated ? " ・ 途中で打ち切り（さらに長い可能性／下限として加点）" : "";
+    const more = s.truncated ? " ・ 取得が掘り切れず下限（さらに長い可能性／下限として加点）" : "";
     body = `<b>${s.currentStreakDays}</b> 日（${escapeHtml(state)}）・ 最新実稼働 ${escapeHtml(
       s.lastActiveDay ?? "-",
     )}${escapeHtml(more)} ・ 総合に加点（長期軸・重み12%）`;

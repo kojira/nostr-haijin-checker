@@ -47,10 +47,8 @@ function mkStreak(days: number, opts: Partial<StreakInfo> = {}): StreakInfo {
     lastActiveDay: days > 0 ? "2024-01-01" : null,
     daysSinceLastActive: days > 0 ? 0 : null,
     ongoing: days > 0,
-    daysScanned: days,
+    observedActiveDays: days,
     truncated: false,
-    relaysQueried: 1,
-    elapsedMs: 1,
     ...opts,
   };
 }
@@ -107,7 +105,7 @@ test("buildShareText: 掘り切れていないストリークは下限（≥）�
     DEFAULT_CONFIG,
     now,
     null,
-    mkStreak(1000, { truncated: true, daysScanned: 1000 }),
+    mkStreak(1000, { truncated: true, observedActiveDays: 1000 }),
   );
   const text = buildShareText(r);
   assert.ok(text.includes("≥1000日"), `下限表記が無い: ${text}`);

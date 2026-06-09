@@ -162,16 +162,17 @@ export interface AnalysisProgress {
 export type AnalysisProgressCallback = (progress: AnalysisProgress) => void;
 
 /**
- * 採点フローのトップレベル・フェーズ。取得→ストリーク→解析→描画準備の 4 段階で、
+ * 採点フローのトップレベル・フェーズ。取得→解析→描画準備の 3 段階で、
  * 「いま全体のどこにいるか」を CLI/Web に一貫した語彙で見せるための軸。
  * 解析フェーズ（analyzing）の内訳は AnalysisStage（prepare/aggregate/signals/finalize）。
+ * ストリーク（連続実稼働日数）は取得済みイベントから導出するため独立フェーズを持たない
+ * （別経路の追加取得が無くなった）。
  */
-export type WorkflowPhase = "fetching" | "streak" | "analyzing" | "rendering";
+export type WorkflowPhase = "fetching" | "analyzing" | "rendering";
 
 /** WorkflowPhase の日本語ラベル（CLI/Web で表記を揃える）。 */
 export const WORKFLOW_PHASE_LABELS: Record<WorkflowPhase, string> = {
   fetching: "取得中",
-  streak: "ストリーク確認中",
   analyzing: "解析中",
   rendering: "描画準備中",
 };
@@ -250,13 +251,13 @@ export interface Rank {
 }
 
 /**
- * ストリーク（連続実稼働日数）の軽量ルックアップ結果。
+ * ストリーク（連続実稼働日数）。
  *
- * heavy fetch（HistoryMeta＝全件取得）とは **別経路**で、日単位に「その日に投稿が
- * 1 件でもあるか」だけを安く・深く確認して数えた結果を表す。全件取得には依存せず、
- * heavy fetch が遡れる範囲より遠くまで（cheap に）遡れることがある。
- * **取得経路は独立だが**、得られた連続日数は「連続実稼働」シグナル（長期軸・重み 0.12）
- * として総合スコア（totalScore）に加点される（連続日数が長いほどスコアが上がる）。
+ * **取得（適応的タイムウィンドウ）で集めた許可 kind イベントから導出する**。日次の活動有無
+ * だけを別経路で確認する追加取得は行わず、メインの取得結果（同じイベント配列）を唯一の
+ * 真実とする。ローカル日単位に「その日に投稿が 1 件でもあるか（実稼働日）」を集計し、最新の
+ * 実稼働日から途切れずに遡れた連続日数を数える。得られた連続日数は「連続実稼働」シグナル
+ * （長期軸・重み 0.12）として総合スコア（totalScore）に加点される（連続日数が長いほど上がる）。
  */
 export interface StreakInfo {
   /** 連続実稼働日数（最新の実稼働日から、途切れずに遡れた日数）。 */
@@ -267,18 +268,15 @@ export interface StreakInfo {
   daysSinceLastActive: number | null;
   /** ストリークが今も継続中か（最新実稼働日が今日 or 昨日なら true）。 */
   ongoing: boolean;
-  /** 走査した日数（= 軽量プローブの往復回数の目安）。 */
-  daysScanned: number;
+  /** ストリーク算出の母数となった観測実稼働日数（取得イベントから導いた distinct な実稼働日数）。 */
+  observedActiveDays: number;
   /**
-   * 自然終端ではない理由で打ち切ったか＝期限（overallTimeout）・プローブ失敗・
-   * テスト/任意の上限（maxDays）。内部に焼き込んだ日数の天井は無い。
-   * true のときは実際の連続日数はさらに長い可能性がある（下限として扱う）。
+   * 取得が掘り切れていない（HistoryMeta.historyComplete===false）ために、観測できた
+   * 連続日数が実際の連続日数の **下限**にとどまる可能性があるか。取得を全範囲覆い切れた
+   * （historyComplete===true）なら、ギャップは確定なので false。true のときは表示・加点とも
+   * 「≥」の下限として控えめに扱う（実際の連続日数はさらに長い可能性がある）。
    */
   truncated: boolean;
-  /** 問い合わせたリレー数（概算）。 */
-  relaysQueried: number;
-  /** ルックアップに要した時間（ms）。 */
-  elapsedMs: number;
 }
 
 /** スコアリング全体の最終結果。 */
@@ -287,8 +285,8 @@ export interface ScoreResult {
   pubkeyHex: string;
   /**
    * 0-100 の総合廃人スコア（短期・パターン・長期の信頼度加重合算）。
-   * ストリーク（連続実稼働）の軽量ルックアップが渡された場合は、その連続日数を
-   * 「連続実稼働」シグナル（長期軸・重み 0.12）として加点した値になる。
+   * ストリーク（連続実稼働）が渡された場合は、その連続日数を「連続実稼働」シグナル
+   * （長期軸・重み 0.12）として加点した値になる。連続日数は取得済みイベントから導出する。
    */
   totalScore: number;
   rank: Rank;
@@ -310,9 +308,9 @@ export interface ScoreResult {
    */
   history: HistoryMeta | null;
   /**
-   * ストリーク（連続実稼働日数）の軽量ルックアップ結果。heavy fetch とは別経路で
-   * 日次の活動有無だけを掘る。渡された場合は「連続実稼働」シグナルとして totalScore に
-   * 加点され、signals にも現れる。ストリーク経路を介さない場合は null。
+   * ストリーク（連続実稼働日数）。取得済みイベント（メインの取得結果）から導出する。
+   * 渡された場合は「連続実稼働」シグナルとして totalScore に加点され、signals にも現れる。
+   * ストリークを計測しない場合は null。
    */
   streak: StreakInfo | null;
   /** 観測の限界に関する注意書き。 */

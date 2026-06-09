@@ -464,19 +464,19 @@ export function longTermRetentionSignal(
  * 6) 連続実稼働ストリーク（長期軸）: 連続して実稼働日（その日に 1 件以上投稿）が
  *    続いた日数を、総合スコアに加点する独立シグナル。
  *
- * 入力 `streak.currentStreakDays` は heavy fetch とは別経路の軽量プローブ
- * （streak.ts）で **日ごとに活動有無だけを直接確認**して数えた連続日数。これを
- * 飽和カーブ `saturating(days, STREAK_FULL_DAYS)` で 0-100 に写す。早い段階で強く
- * 伸び、約 60 日で頭打ちになる（短期の活発さを過度に支配しないよう重みは控えめ）。
+ * 入力 `streak.currentStreakDays` は **メインの取得で集めたイベントから導出**した
+ * （scoring/streak.ts の deriveStreak）連続日数。日ごとの活動有無を取得済みイベントから
+ * 集計して数える。これを飽和カーブ `saturating(days, STREAK_FULL_DAYS)` で 0-100 に写す。
+ * 早い段階で強く伸び、約 60 日で頭打ちになる（短期の活発さを過度に支配しないよう重みは控えめ）。
  *
- * 信頼度割引はしない（観測ウィンドウの長短ではなく、ストリーク経路が連続日を
- * **直接プローブで確認済み**だから）。総合スコアでは modest な固定重み（WEIGHTS.streak）
- * で重み付き平均に参加する。
+ * 信頼度割引はしない（観測ウィンドウの長短ではなく、取得済みイベントから連続日を
+ * **直接導出済み**だから）。総合スコアでは modest な固定重み（WEIGHTS.streak）で
+ * 重み付き平均に参加する。
  *
- * truncated（期限/プローブ失敗/任意の上限で途中打ち切り）のとき、`currentStreakDays` は
- * 「実際の連続日数の下限」である。saturating は単調増加なので、この下限から得た
- * スコアは過大主張ではなく **控えめな下限**として扱える（真の値はこれ以上）。
- * したがって既知の長いストリークは高く出つつ、正確な天井は断定しない（reason に「≥」と明示）。
+ * truncated（取得が履歴を掘り切れていない）のとき、`currentStreakDays` は「実際の連続日数の
+ * 下限」である。saturating は単調増加なので、この下限から得たスコアは過大主張ではなく
+ * **控えめな下限**として扱える（真の値はこれ以上）。したがって既知の長いストリークは高く
+ * 出つつ、正確な天井は断定しない（reason に「≥」と明示）。
  */
 export function streakRetentionSignal(
   streak: StreakInfo,
@@ -494,7 +494,7 @@ export function streakRetentionSignal(
         ? "継続中"
         : `${streak.daysSinceLastActive}日前に途切れ`;
   const trunc = streak.truncated
-    ? "（途中打ち切り: 実際の連続日数はこれ以上＝下限として控えめに加点）"
+    ? "（取得が掘り切れていないため下限: 実際の連続日数はこれ以上＝控えめに加点）"
     : "";
   const reason =
     days === 0

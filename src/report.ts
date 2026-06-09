@@ -71,8 +71,8 @@ export function formatReport(result: ScoreResult): string {
       `${c.dim}取得:${c.reset} ${h.pagesFetched} ページ / ${relayPart} / ${h.elapsedMs}ms ・ 履歴 ${dug}`,
     );
   }
-  // ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ結果。
-  // 取得経路は独立だが、連続日数は「連続実稼働」シグナル（長期軸・重み 12%）として総合へ加点。
+  // ストリーク（連続実稼働日数）は取得済みイベントから導出した結果。
+  // 連続日数は「連続実稼働」シグナル（長期軸・重み 12%）として総合へ加点される。
   if (result.streak) {
     const s = result.streak;
     let body: string;
@@ -82,13 +82,13 @@ export function formatReport(result: ScoreResult): string {
       const state = s.ongoing
         ? `${c.green}継続中${c.reset}`
         : `${c.yellow}途切れ（${s.daysSinceLastActive ?? "?"}日前）${c.reset}`;
-      const more = s.truncated ? `${c.yellow}（途中打ち切り: さらに長い可能性）${c.reset}` : "";
+      const more = s.truncated ? `${c.yellow}（取得が掘り切れず下限: さらに長い可能性）${c.reset}` : "";
       body =
         `${c.bold}${s.currentStreakDays}${c.reset} 日 ${state}` +
         ` ・ 最新実稼働 ${s.lastActiveDay ?? "-"}${more ? " " + more : ""}`;
     }
     lines.push(
-      `${c.dim}連続実稼働(別経路):${c.reset} ${body} ${c.dim}※日ごとに1件以上の有無で判定（取得は全件とは独立）。連続日数は「連続実稼働」シグナルとして総合に加点（長期軸・重み12%・約60日で頭打ち）${c.reset}`,
+      `${c.dim}連続実稼働:${c.reset} ${body} ${c.dim}※取得済みイベントから日ごとに1件以上の有無で判定。連続日数は「連続実稼働」シグナルとして総合に加点（長期軸・重み12%・約60日で頭打ち）${c.reset}`,
     );
   }
   lines.push("");
