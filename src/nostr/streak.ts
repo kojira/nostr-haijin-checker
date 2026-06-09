@@ -66,7 +66,11 @@ export interface StreakLookupOptions {
   nowUnix?: number;
   /** 1 プローブ（最新 1 件取得）のタイムアウト（ms）。既定 10000。 */
   probeTimeoutMs?: number;
-  /** 走査全体の安全上限（ms）。0 で無効。既定 60000。 */
+  /**
+   * 走査全体の安全上限（ms）。**既定は 0（無効）**＝既定では時間で打ち切らない。
+   * 既定で「辿れるだけ辿る」を本当の意味にするため、ここは無効が初期値。
+   * 暴走防止の保険として明示的に正の値を渡したときだけ上限として働く（任意の安全ノブ）。
+   */
   overallTimeoutMs?: number;
   /** 実稼働日の判定に使う kind を上書きしたいとき（既定は `ALLOWED_KINDS`）。 */
   kinds?: number[];
@@ -77,11 +81,15 @@ export interface StreakLookupOptions {
    * 本番（CLI/ブラウザ）では渡さない。
    */
   fetcher?: StreakFetcher;
+  /**
+   * テストシーム。経過時間の取得元（ms, Date.now 互換）。既定は実時計。
+   * overallTimeoutMs の打ち切りを決定的に検証するために注入できる。本番では渡さない。
+   */
+  clockMs?: () => number;
 }
 
 const DEFAULTS = {
   probeTimeoutMs: 10000,
-  overallTimeoutMs: 60000,
 } as const;
 
 /**
@@ -98,10 +106,9 @@ export async function lookupStreak(
   // 未指定なら無制限（Infinity）。指定時のみテスト/任意の安全ノブとして上限になる。
   const maxDays = opts.maxDays != null ? clampPositive(opts.maxDays, Infinity) : Infinity;
   const probeTimeoutMs = clampPositive(opts.probeTimeoutMs, DEFAULTS.probeTimeoutMs);
-  const overallTimeoutMs = Math.max(
-    0,
-    Math.floor(opts.overallTimeoutMs ?? DEFAULTS.overallTimeoutMs),
-  );
+  // 既定は 0（無効）。既定では時間で打ち切らず、リレーが返す限り辿り切る。
+  const overallTimeoutMs = Math.max(0, Math.floor(opts.overallTimeoutMs ?? 0));
+  const clockMs = opts.clockMs ?? (() => Date.now());
   const now = opts.nowUnix ?? Math.floor(Date.now() / 1000);
 
   // 実稼働日は許可リスト（ALLOWED_KINDS）の kind があった日だけを数える。
@@ -118,7 +125,7 @@ export async function lookupStreak(
         : undefined,
     );
 
-  const startedAt = Date.now();
+  const startedAt = clockMs();
   const deadline = overallTimeoutMs > 0 ? startedAt + overallTimeoutMs : Infinity;
 
   // ローカル日インデックス（tz 補正後の暦日番号）。同じ番号 = 同じローカル日。
@@ -137,12 +144,20 @@ export async function lookupStreak(
 
   try {
     while (scanned < maxDays) {
-      if (Date.now() >= deadline) break; // 時間切れ。endedNaturally のまま false → truncated。
+      if (clockMs() >= deadline) break; // 時間切れ。endedNaturally のまま false → truncated。
       scanned++;
 
       let ev: NostrEvent | undefined;
       try {
-        ev = await probeLastEvent(fetcher, opts.relays, filter, cursor, probeTimeoutMs, deadline);
+        ev = await probeLastEvent(
+          fetcher,
+          opts.relays,
+          filter,
+          cursor,
+          probeTimeoutMs,
+          deadline,
+          clockMs,
+        );
       } catch {
         // プローブ失敗/タイムアウト。これ以上は不明なので打ち切り（truncated 扱い）。
         break;
@@ -190,7 +205,7 @@ export async function lookupStreak(
     daysScanned: scanned,
     truncated,
     relaysQueried: opts.relays.length,
-    elapsedMs: Date.now() - startedAt,
+    elapsedMs: clockMs() - startedAt,
   };
 }
 
@@ -205,8 +220,9 @@ async function probeLastEvent(
   asOf: number,
   timeoutMs: number,
   deadline: number,
+  clockMs: () => number,
 ): Promise<NostrEvent | undefined> {
-  const eff = Math.max(1, Math.min(timeoutMs, deadline - Date.now()));
+  const eff = Math.max(1, Math.min(timeoutMs, deadline - clockMs()));
   const ac = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
