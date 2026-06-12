@@ -12,6 +12,7 @@ import { Command } from "commander";
 import { fetchUserEvents, type FetchProgress } from "./nostr/fetch.js";
 import { DEFAULT_RELAYS } from "./nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "./nostr/npub.js";
+import { PERIOD_LABELS, parsePeriod, sinceUnixForPeriod } from "./period.js";
 import { DEFAULT_CONFIG, deriveStreak, scoreEvents } from "./scoring/index.js";
 import { formatReport } from "./report.js";
 import {
@@ -60,8 +61,13 @@ program
     "0",
   )
   .option(
+    "--period <mode>",
+    "観測期間モード（all|month|week|day）。直近の範囲に絞って取得・採点する。all=全期間（既定）/ month=1ヶ月 / week=1週間 / day=1日",
+    "all",
+  )
+  .option(
     "--since <unixsec>",
-    "この時刻(UNIX秒)より古いイベントは取りに行かない（下限。既定 2021-01-01）",
+    "この時刻(UNIX秒)より古いイベントは取りに行かない（下限。既定 2021-01-01。--period が all 以外のときはそちらが優先）",
   )
   .option("-t, --tz <hours>", "時間分布の判定に使う UTC オフセット（時間）", "9")
   .option(
@@ -137,6 +143,7 @@ const opts = program.opts<{
   minWindow: string;
   maxWindows: string;
   maxEvents: string;
+  period: string;
   since?: string;
   tz: string;
   windowTimeout: string;
@@ -202,17 +209,29 @@ async function main(): Promise<void> {
     ? opts.relays.split(",").map((r) => r.trim()).filter(Boolean)
     : DEFAULT_RELAYS;
 
+  // 「いま」は取得・採点・ストリーク導出で一貫させるため一度だけ確定する。
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // 観測期間モード（直近 N 日に絞る）。範囲を絞れば観測データが変わり、採点の解釈も従う。
+  const period = parsePeriod(opts.period);
+
   const config: ScoringConfig = {
     ...DEFAULT_CONFIG,
     tzOffsetHours: Number(opts.tz),
+    observationPeriod: period,
   };
 
-  const sinceUnix =
+  // 期間モードが範囲を絞る（all 以外）なら、その下限を since として優先する。
+  // all のときは従来どおり --since（未指定なら query.ts の既定 2021-01-01）を使う。
+  const explicitSince =
     opts.since != null && opts.since !== "" ? Number(opts.since) : undefined;
+  const sinceUnix = sinceUnixForPeriod(period, nowSec) ?? explicitSince;
 
   if (!opts.json) {
+    const periodPart =
+      period === "all" ? "全期間" : `直近 ${PERIOD_LABELS[period]}`;
     console.error(
-      `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, initial-window ${opts.initialWindow}s, dense-threshold ${opts.denseThreshold}）。`,
+      `リレーへ問い合わせ中... 各リレーを適応的タイムウィンドウで取得（${relays.length} relays, 期間 ${periodPart}, initial-window ${opts.initialWindow}s, dense-threshold ${opts.denseThreshold}）。`,
     );
   }
 
@@ -240,7 +259,6 @@ async function main(): Promise<void> {
   // メイン取得で集めたイベントをローカル日単位に集計し、最新の実稼働日から連続が途切れる
   // まで数える。連続日数は scoreEvents 内で「連続実稼働」シグナル（長期軸・重み 12%）として
   // 総合スコアに加点される。取得が掘り切れていなければ下限（truncated）扱い。--no-streak で無効化。
-  const nowSec = Math.floor(Date.now() / 1000);
   let streak: StreakInfo | null = null;
   if (opts.streak) {
     streak = deriveStreak(events, {

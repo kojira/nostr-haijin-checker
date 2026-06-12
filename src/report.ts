@@ -3,6 +3,7 @@
  * 色付けは ANSI エスケープを直接使い、依存を増やさない。
  */
 import type { ScoreResult, SignalScore } from "./types.js";
+import { PERIOD_LABELS } from "./period.js";
 
 const c = {
   reset: "\x1b[0m",
@@ -49,6 +50,11 @@ export function formatReport(result: ScoreResult): string {
   lines.push("");
   lines.push(`${c.bold}=== Nostr 廃人度チェック ===${c.reset}`);
   lines.push(`${c.dim}npub:${c.reset} ${result.npub}`);
+  lines.push(
+    `${c.dim}期間モード:${c.reset} ${c.bold}${
+      PERIOD_LABELS[result.observationPeriod]
+    }${c.reset}`,
+  );
   lines.push(
     `${c.dim}観測:${c.reset} ${result.sampleSize} 件 / ${fmtDate(
       result.windowStart,

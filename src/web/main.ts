@@ -11,6 +11,7 @@ import { DEFAULT_RELAYS } from "../nostr/relays.js";
 import { InvalidNpubError, toNpub, toPubkeyHex } from "../nostr/npub.js";
 import { DEFAULT_CONFIG, deriveStreak, scoreEvents } from "../scoring/index.js";
 import { buildShareText } from "../scoring/shareText.js";
+import { PERIOD_LABELS, parsePeriod, sinceUnixForPeriod } from "../period.js";
 import {
   ANALYSIS_STAGE_LABELS,
   WORKFLOW_PHASE_LABELS,
@@ -78,6 +79,14 @@ function setError(message: string): void {
   nip07Btn.disabled = false;
   statusEl.textContent = message;
   statusEl.classList.add("error");
+}
+
+/** 選択中の観測期間モードを取得する（未選択・不正値は既定 all に丸める）。 */
+function selectedPeriod(): ReturnType<typeof parsePeriod> {
+  const checked = document.querySelector<HTMLInputElement>(
+    'input[name="period"]:checked',
+  );
+  return parsePeriod(checked?.value);
 }
 
 function parseRelays(raw: string): string[] {
@@ -172,11 +181,19 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
   // ストリーク（連続実稼働日数）は全件取得とは別経路の軽量ルックアップ。
   const streakEnabled = streakEnabledInput.checked;
 
+  // 観測期間モード（全期間 / 1ヶ月 / 1週間 / 1日）。範囲を絞れば観測データ＝採点の解釈も変わる。
+  // 「いま」は取得・採点・ストリーク導出で一貫させるため一度だけ確定する。
+  const nowSec = Math.floor(Date.now() / 1000);
+  const period = selectedPeriod();
+  // all のときは undefined（取得側の既定 since を使う）。それ以外は直近 N 日の下限を渡す。
+  const sinceUnix = sinceUnixForPeriod(period, nowSec);
+
   const config: ScoringConfig = {
     ...DEFAULT_CONFIG,
     tzOffsetHours: tz,
     // JST 以外を選んだ場合もラベルだけは offset 表記にしておく。
     timezoneLabel: tz === 9 ? "JST" : `UTC${tz >= 0 ? "+" : ""}${tz}`,
+    observationPeriod: period,
   };
 
   // 共有しやすいよう URL を更新（履歴は汚さない）。
@@ -197,6 +214,8 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
       windowTimeoutMs,
       relayTimeoutMs,
       overallTimeoutMs,
+      // 観測期間モードが範囲を絞る（all 以外）なら、その下限を since として渡す。
+      sinceUnix,
       // 取得の途中経過をライブ表示する（リレー応答数・件数・遡れた最古など）。
       onProgress: (p) => renderProgress(p),
     });
@@ -205,7 +224,6 @@ async function runCheck(pubkeyHex: string, npub: string): Promise<void> {
     // メイン取得で集めたイベントをローカル日単位に集計し、最新の実稼働日から連続が途切れる
     // まで数える。同期処理なので独立フェーズは持たない。得られた連続日数は scoreEvents 内で
     // 「連続実稼働」シグナル（長期軸・重み 12%）として総合スコアに加点される。
-    const nowSec = Math.floor(Date.now() / 1000);
     let streak: StreakInfo | null = null;
     if (streakEnabled) {
       streak = deriveStreak(events, {
@@ -457,6 +475,7 @@ function renderResult(r: ScoreResult): void {
       <span class="rank-desc">${escapeHtml(r.rank.description)}</span>
     </div>
     <p class="observed">
+      期間モード <b>${escapeHtml(PERIOD_LABELS[r.observationPeriod])}</b><br />
       観測 ${r.sampleSize} 件 / ${fmtDate(r.windowStart)} 〜 ${fmtDate(r.windowEnd)}
       (${escapeHtml(r.timezone)})<br />
       観測ウィンドウ ${obs.observedWindowDays} 日 / 実稼働 ${obs.observedActiveDays} 日 /

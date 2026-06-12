@@ -20,6 +20,7 @@ import type {
   SubScores,
 } from "../types.js";
 import { isAllowedKind } from "../kinds.js";
+import { PERIOD_LABELS } from "../period.js";
 import { prepareEvents } from "./prepare.js";
 import {
   aggregateEvents,
@@ -43,10 +44,11 @@ export {
 // ストリーク導出（取得済みイベントから連続実稼働日数を数える純関数）を再エクスポートする。
 export { deriveStreak, type DeriveStreakOptions } from "./streak.js";
 
-/** デフォルトのスコアリング設定（JST）。 */
+/** デフォルトのスコアリング設定（JST・全期間）。 */
 export const DEFAULT_CONFIG: ScoringConfig = {
   tzOffsetHours: 9,
   timezoneLabel: "JST",
+  observationPeriod: "all",
 };
 
 /**
@@ -94,6 +96,10 @@ export function scoreEvents(
   onProgress?: AnalysisProgressCallback,
 ): ScoreResult {
   const notes: string[] = [];
+
+  // 観測期間モード（直近 N 日に絞っているか）を最初に明示する。範囲を絞ったときは
+  // スコアが「その期間内の濃さ」であり、長期継続・古参度は控えめに出ることを伝える。
+  for (const n of periodNote(config)) notes.push(n);
 
   // 採点入力も許可リスト（ALLOWED_KINDS）に限定する。取得経路は既に kind を絞って
   // いるが、イベント配列を直接渡された場合に備えた防御的フィルタ（許可外 kind は
@@ -226,10 +232,25 @@ export function scoreEvents(
     windowStart: start,
     windowEnd: end,
     timezone: config.timezoneLabel,
+    observationPeriod: config.observationPeriod ?? "all",
     history: fetchMeta,
     streak,
     notes,
   };
+}
+
+/**
+ * 観測期間モードの注意書き。範囲を絞ったとき（all 以外）だけ 1 行出す。
+ * スコアが「その期間内の活動の濃さ」を表すこと、長期軸は控えめに出ることを明示する。
+ */
+function periodNote(config: ScoringConfig): string[] {
+  const p = config.observationPeriod ?? "all";
+  if (p === "all") return [];
+  return [
+    `観測期間モード「${PERIOD_LABELS[p]}」: 直近 ${PERIOD_LABELS[p]} の範囲に絞って取得・採点しています。` +
+      "スコアはこの期間内の活動の濃さを表し、観測ウィンドウが短いぶん長期継続・古参度は控えめに評価されます。" +
+      "より長い継続・古参度を見たいときは全期間モードでお試しください。",
+  ];
 }
 
 /** UNIX 秒を "YYYY-MM-DD HH:mmZ" の短い ISO 文字列にする（注意書き用）。 */
@@ -392,6 +413,7 @@ function emptyResult(
     windowStart: null,
     windowEnd: null,
     timezone: config.timezoneLabel,
+    observationPeriod: config.observationPeriod ?? "all",
     history: fetchMeta,
     streak,
     notes,

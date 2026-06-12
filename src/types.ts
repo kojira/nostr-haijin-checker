@@ -4,6 +4,17 @@
  * 将来的に Web / LLM 層から再利用しやすいよう、ドメイン型は UI/CLI に依存させない。
  */
 
+/**
+ * 観測期間モード。UI/CLI から選び、取得の時間下限（since）を決めることで
+ * 「どの範囲のデータを観測して採点するか」を切り替える。範囲が変われば
+ * 観測ウィンドウ・密度・長期評価可否が自然に変わり、スコアの解釈も変わる。
+ *  - all   : 全期間（既定。下限を絞らず可能な限り遡る）。
+ *  - month : 直近 1 ヶ月（30 日）。
+ *  - week  : 直近 1 週間（7 日）。
+ *  - day   : 直近 1 日（24 時間）。
+ */
+export type PeriodMode = "all" | "month" | "week" | "day";
+
 /** Nostr の生イベント（必要な範囲だけ持つ簡易表現）。 */
 export interface NostrEvent {
   id: string;
@@ -302,6 +313,8 @@ export interface ScoreResult {
   windowEnd: number | null;
   /** 表示タイムゾーン（時間分布の解釈に使用）。 */
   timezone: string;
+  /** 採点に使った観測期間モード（全期間 / 1ヶ月 / 1週間 / 1日）。 */
+  observationPeriod: PeriodMode;
   /**
    * 取得（適応的タイムウィンドウ）のメタ情報。
    * どこまで遡れたか・履歴を掘り切れたかを表す。取得経路を介さない場合は null。
@@ -323,4 +336,10 @@ export interface ScoringConfig {
   tzOffsetHours: number;
   /** タイムゾーン表示名。 */
   timezoneLabel: string;
+  /**
+   * 観測期間モード（「どの範囲のデータで見ているか」の解釈に使う）。既定 all。
+   * 取得側で since を絞ることで観測データ範囲が変わり、採点の解釈もそれに従う。
+   * scoreEvents は採点ロジック自体は変えず、注意書き・結果メタに期間モードを反映する。
+   */
+  observationPeriod?: PeriodMode;
 }

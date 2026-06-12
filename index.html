@@ -32,6 +32,31 @@
           />
         </label>
 
+        <fieldset class="field period-field">
+          <legend class="field-label">観測期間（採点する範囲）</legend>
+          <div class="period-options">
+            <label class="period-option">
+              <input type="radio" name="period" value="all" checked />
+              <span>全期間</span>
+            </label>
+            <label class="period-option">
+              <input type="radio" name="period" value="month" />
+              <span>1ヶ月</span>
+            </label>
+            <label class="period-option">
+              <input type="radio" name="period" value="week" />
+              <span>1週間</span>
+            </label>
+            <label class="period-option">
+              <input type="radio" name="period" value="day" />
+              <span>1日</span>
+            </label>
+          </div>
+          <p class="hint">
+            直近の範囲に絞ると、その期間内の活動の濃さで採点します（観測ウィンドウが短いぶん長期継続・古参度は控えめに出ます）。
+          </p>
+        </fieldset>
+
         <details class="advanced">
           <summary>詳細設定（リレー・取得ウィンドウ・タイムゾーン）</summary>
           <div class="advanced-body">
