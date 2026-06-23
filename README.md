@@ -1,5 +1,7 @@
 # nostr-haijin-checker 💀
 
+🔗 **Live:** https://kojira.github.io/nostr-haijin-checker/
+
 `npub` を 1 つ渡すと、その人の **「廃人度（Haijin score）」** を 0〜100 点で
 採点します。CLI でも Web（ブラウザ）でも使えます。次の **3 つの軸**で採点します。
 
